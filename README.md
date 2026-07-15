@@ -27,9 +27,10 @@
 
 ## 📂 檔案結構
 
-* `code.gs.js`：核心邏輯，包含選單建立、側邊欄調用、計算引擎、搜尋模組與 Dashboard 寫入。
-* `YearReport.gs.js`：年度收益總覽報表寫入邏輯。
-* `Sidebar.html`：側邊欄交易輸入表單 UI（包含前端防抖模糊搜尋）。
+GAS 相關的所有程式碼皆存放在專案的 **`code/`** 資料夾中，您可以直接在 GitHub 上點開各個檔案複製程式碼，並貼到您的 Google Apps Script 編輯器內：
+* `code/code.gs.js`：核心邏輯，包含選單建立、側邊欄調用、計算引擎、搜尋模組與 Dashboard 寫入。
+* `code/YearReport.gs.js`：年度收益總覽報表寫入邏輯。
+* `code/Sidebar.html`：側邊欄交易輸入表單 UI（包含前端防抖模糊搜尋）。
 
 ---
 
@@ -51,10 +52,12 @@
 ---
 
 ### 步驟 2：部署 Google Apps Script 程式碼
+> 💡 **提示**：Google Apps Script 相關的原始碼檔案皆位於 GitHub 專案的 **`code/`** 資料夾下。您可以直接在 GitHub 上複製對應的程式碼內容貼入 Apps Script 內。
+
 1. 在試算表上方選單點選 **「擴充功能」 (Extensions)** -> **「Apps Script」**。
-2. 將預設的 `代碼.gs`（或建立新指令碼檔案）重新命名為 **`code.gs`**，並將專案中的 `code.gs.js` 內容複製貼上。
-3. 建立一個新指令碼檔案命名為 **`YearReport.gs`**，並將 `YearReport.gs.js` 內容複製貼上。
-4. 建立一個 HTML 檔案命名為 **`Sidebar`** (系統會自動加上 `.html` 擴充副檔名)，並將 `Sidebar.html` 內容複製貼上。
+2. 將預設的 `代碼.gs`（或建立新指令碼檔案）重新命名為 **`code.gs`**，並將專案中 **`code/code.gs.js`** 的內容複製貼上。
+3. 建立一個新指令碼檔案命名為 **`YearReport.gs`**，並將專案中 **`code/YearReport.gs.js`** 的內容複製貼上。
+4. 建立一個 HTML 檔案命名為 **`Sidebar`** (系統會自動加上 `.html` 擴充副檔名)，並將專案中 **`code/Sidebar.html`** 的內容複製貼上。
 5. 點選上方「儲存專案」按鈕。
 
 ![部署演示](docs/2026-07-15_16-02-10.gif)
