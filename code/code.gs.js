@@ -154,6 +154,15 @@ function checkAndInitSheets_() {
       sheet.setColumnWidth(col, initWidths[col - 1]);
     }
     
+    // 自動建立篩選器（範圍涵蓋 A1:H 欄），方便使用者個別篩選查詢
+    try {
+      if (!sheet.getFilter()) {
+        sheet.getRange("A1:H").createFilter();
+      }
+    } catch (e) {
+      Logger.log("自動建立篩選器失敗: " + e);
+    }
+    
     ss.toast('已自動建立並初始化『個股交易紀錄』分頁！', '⚡️ 系統初始化');
   }
   return sheet;
