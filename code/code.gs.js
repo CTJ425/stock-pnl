@@ -62,7 +62,12 @@ function promptGlobalFeeRate() {
   const currentRate = props.getProperty('GLOBAL_FEE_RATE') || '0.001425';
   const response = ui.prompt(
     '⚙ 設定全域手續費率',
-    '請輸入預設的手續費百分比率 (小數格式，例如台股為 0.001425)：\n目前的設定為：' + currentRate,
+    '請輸入預設的手續費百分比率 (小數格式)：\n\n' +
+    '・台股標準手續費率為 0.001425 (即 0.1425%)\n' +
+    '・若券商有手續費折扣，請自行換算後輸入，例如：\n' +
+    '　　三折 → 0.001425 × 0.3 = 0.0004275\n' +
+    '　　五折 → 0.001425 × 0.5 = 0.0007125\n\n' +
+    '目前的設定為：' + currentRate,
     ui.ButtonSet.OK_CANCEL
   );
   if (response.getSelectedButton() === ui.Button.OK) {

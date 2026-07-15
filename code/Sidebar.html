@@ -103,7 +103,7 @@
       <input type="number" id="feeRate" step="0.000001" min="0" placeholder="0.001425">
     </div>
 
-    <div class="form-group">
+    <div class="form-group" id="taxGroup" style="display: none;">
       <label>證交稅率 (僅台股賣出計算，ETF 自動調為 0.1%)</label>
       <input type="number" id="taxRate" step="0.0001" min="0" value="0.003">
     </div>
@@ -137,18 +137,19 @@
         })
         .getGlobalFeeRate();
 
-      // 證交稅率欄位：依代號自動帶入 (一般股票 0.3%，ETF 代號 00 開頭 0.1%)；
+      // 證交稅率欄位：只在「台股 + 賣出」時顯示，依代號自動帶入
+      // (一般股票 0.3%，ETF 代號 00 開頭 0.1%)；
       // 使用者手動改過就不再自動覆蓋，直到表單送出成功後重置
       let taxRateManual = false;
       function updateTaxRateField() {
         const market = document.getElementById('market').value;
         const type = document.getElementById('type').value;
-        const taxInput = document.getElementById('taxRate');
-        taxInput.disabled = !(market === 'TPE' && type === '賣出');
+        const show = (market === 'TPE' && type === '賣出');
+        document.getElementById('taxGroup').style.display = show ? '' : 'none';
         if (!taxRateManual) {
           // ETF 判斷規則與 Dashboard 未實現損益公式一致 (代號前兩碼為 00)
           const ticker = document.getElementById('ticker').value.trim().replace(/^TPE:/i, '');
-          taxInput.value = ticker.indexOf('00') === 0 ? '0.001' : '0.003';
+          document.getElementById('taxRate').value = ticker.indexOf('00') === 0 ? '0.001' : '0.003';
         }
       }
 
