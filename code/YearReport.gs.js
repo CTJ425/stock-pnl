@@ -9,7 +9,14 @@
 function createYearlyReport() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const ui = SpreadsheetApp.getUi();
-  if (!ss.getSheetByName("個股交易紀錄")) {
+  
+  // 自動初始化（如果不存在）
+  if (typeof checkAndInitSheets_ === "function") {
+    checkAndInitSheets_();
+  }
+  
+  const recordSheet = ss.getSheetByName("個股交易紀錄");
+  if (!recordSheet) {
     ui.alert("❌ 錯誤:找不到『個股交易紀錄』分頁!");
     return;
   }

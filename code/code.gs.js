@@ -19,6 +19,8 @@ function buildMenu_() {
   menu.addItem('💰 買賣輸入', 'showSidebar');
   menu.addItem('📊 建立/更新庫存總覽 Dashboard', 'createPortfolioDashboard');
   menu.addItem('📅 建立/更新年度收益總覽', 'createYearlyReport');
+  menu.addSeparator();
+  menu.addItem('🛠️ 初始化交易紀錄分頁', 'initializeTransactionSheet');
   
   // 讀取當前的介面模式設定
   const props = PropertiesService.getUserProperties();
@@ -53,6 +55,9 @@ function setModeModal_() {
 }
 
 function showSidebar() {
+  // 自動檢查並建立「個股交易紀錄」分頁
+  checkAndInitSheets_();
+
   const html = HtmlService.createHtmlOutputFromFile('Sidebar')
     .setTitle('新增交易紀錄')
     .setWidth(320)
@@ -69,6 +74,62 @@ function showSidebar() {
     // 預設與 'SIDEBAR' 模式
     ui.showSidebar(html);
   }
+}
+
+// 手動觸發的初始化選單項目
+function initializeTransactionSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName("個股交易紀錄");
+  if (sheet) {
+    SpreadsheetApp.getUi().alert("ℹ️ 提示：『個股交易紀錄』分頁已存在，無需重複初始化。");
+    return;
+  }
+  checkAndInitSheets_();
+}
+
+// 自動檢查並建立「個股交易紀錄」分頁的共用函式
+function checkAndInitSheets_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName("個股交易紀錄");
+  if (!sheet) {
+    sheet = ss.insertSheet("個股交易紀錄");
+    const headers = [
+      "交易日期",
+      "股票代號",
+      "股票名稱",
+      "交易類型",
+      "交易單價",
+      "交易股數",
+      "手續費 / 稅金",
+      "損益/收支"
+    ];
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers])
+      .setFontWeight("bold")
+      .setBackground("#f1f5f9")
+      .setHorizontalAlignment("center");
+      
+    // 凍結第一列表頭
+    sheet.setFrozenRows(1);
+    
+    // 設定常用格式與對齊
+    sheet.getRange("A2:A").setHorizontalAlignment("center");
+    sheet.getRange("B2:B").setHorizontalAlignment("center");
+    sheet.getRange("C2:C").setHorizontalAlignment("left");
+    sheet.getRange("D2:D").setHorizontalAlignment("center");
+    sheet.getRange("E2:E").setNumberFormat("$#,##0.00").setHorizontalAlignment("right");
+    sheet.getRange("F2:F").setNumberFormat("#,##0").setHorizontalAlignment("right");
+    sheet.getRange("G2:G").setNumberFormat("#,##0").setHorizontalAlignment("right");
+    sheet.getRange("H2:H").setNumberFormat('[Red]$#,##0.00;[Green]-$#,##0.00;$0.00').setHorizontalAlignment("right");
+    
+    // 設定初始合適欄寬防止初次開啟縮排
+    const initWidths = [110, 100, 150, 90, 110, 100, 110, 120];
+    for (let col = 1; col <= initWidths.length; col++) {
+      sheet.setColumnWidth(col, initWidths[col - 1]);
+    }
+    
+    ss.toast('已自動建立並初始化『個股交易紀錄』分頁！', '⚡️ 系統初始化');
+  }
+  return sheet;
 }
 
 /* =========================================================
@@ -477,7 +538,12 @@ function addTransaction(data) {
 function createPortfolioDashboard() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const ui = SpreadsheetApp.getUi();
-  if (!ss.getSheetByName("個股交易紀錄")) {
+  
+  // 自動初始化（如果不存在）
+  checkAndInitSheets_();
+  
+  const recordSheet = ss.getSheetByName("個股交易紀錄");
+  if (!recordSheet) {
     ui.alert("❌ 錯誤:找不到『個股交易紀錄』分頁!");
     return;
   }
