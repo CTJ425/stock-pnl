@@ -672,11 +672,14 @@ function writeDashboard_(dbSheet, holdings) {
     dbSheet.getRange(DATA_START, 1, staticRows.length, 12).setValues(staticRows);
 
     const fPrice = [], fMktVal = [], fUnreal = [], fTotal = [], fRoi = [];
+    const feeRate = getGlobalFeeRate();
     for (let i = 0; i < holdings.length; i++) {
       const r = DATA_START + i;
       fPrice.push(['=IFERROR(GOOGLEFINANCE($A' + r + ',"price"),0)']);
       fMktVal.push(['=C' + r + '*D' + r]);
-      fUnreal.push(['=F' + r + '-D' + r + '*E' + r]);
+      // 扣除預估賣出費用與證交稅以對齊券商 APP 淨損益（台股一般股票 0.3%，ETF 0.1%，其餘為 0）
+      const taxFormula = 'IF(LEFT($A' + r + ',4)="TPE:",IF(MID($A' + r + ',5,2)="00",0.001,0.003),0)';
+      fUnreal.push(['=F' + r + '-D' + r + '*E' + r + '-F' + r + '*(' + feeRate + '+' + taxFormula + ')']);
       fTotal.push(['=G' + r + '+H' + r]);
       fRoi.push(['=IF($L' + r + '=0,0,I' + r + '/$L' + r + ')']);
     }
