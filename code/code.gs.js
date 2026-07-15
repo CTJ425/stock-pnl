@@ -67,13 +67,15 @@ function promptGlobalFeeRate() {
   );
   if (response.getSelectedButton() === ui.Button.OK) {
     const input = response.getResponseText().trim();
-    const rate = parseFloat(input);
-    if (isNaN(rate) || rate < 0) {
-      ui.alert('❌ 錯誤：請輸入有效且大於等於 0 的數字。');
+    const rate = Number(input);
+    // 用 Number 嚴格解析並改存清洗後的數字，避免「0.001425abc」這類輸入
+    // 通過驗證後被直接串入 Dashboard 公式導致整欄解析錯誤
+    if (input === '' || isNaN(rate) || rate < 0 || rate >= 1) {
+      ui.alert('❌ 錯誤：請輸入 0 至 1 之間的小數 (例如 0.001425)。');
       return;
     }
-    props.setProperty('GLOBAL_FEE_RATE', input);
-    ui.alert('🎉 全域預設手續費率已更新為：' + input);
+    props.setProperty('GLOBAL_FEE_RATE', String(rate));
+    ui.alert('🎉 全域預設手續費率已更新為：' + rate);
   }
 }
 
@@ -145,7 +147,7 @@ function checkAndInitSheets_() {
     sheet.getRange("D2:D").setHorizontalAlignment("center");
     sheet.getRange("E2:E").setNumberFormat("$#,##0.00").setHorizontalAlignment("right");
     sheet.getRange("F2:F").setNumberFormat("#,##0").setHorizontalAlignment("right");
-    sheet.getRange("G2:G").setNumberFormat("#,##0").setHorizontalAlignment("right");
+    sheet.getRange("G2:G").setNumberFormat("#,##0.00").setHorizontalAlignment("right"); // 美股手續費有小數
     sheet.getRange("H2:H").setNumberFormat('[Red]$#,##0.00;[Green]-$#,##0.00;$0.00').setHorizontalAlignment("right");
     
     // 設定初始合適欄寬防止初次開啟縮排
@@ -181,7 +183,7 @@ function withRetry_(fn, label) {
     } catch (e) {
       lastErr = e;
       Logger.log("withRetry_ [" + label + "] 第 " + (i + 1) + " 次失敗: " + e);
-      Utilities.sleep(1500 * (i + 1));
+      if (i < 2) Utilities.sleep(1500 * (i + 1)); // 最後一次失敗直接拋出,不再等待
     }
   }
   throw lastErr;
@@ -511,21 +513,23 @@ function getStockName(ticker) {
     market = "TPE";
   }
   const res = searchByTicker(cleanTicker, market);
-  return res ? res.name : ticker;
+  return res ? res.name : cleanTicker; // 查無結果時回傳去除 TPE: 前綴的代號
 }
 
+// 錯誤一律以 throw 回報,讓前端 failureHandler 接手(保留使用者輸入,不清空表單)
 function addTransaction(data) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName("個股交易紀錄");
-  if (!sheet) return "錯誤:找不到『個股交易紀錄』分頁!";
+  if (!sheet) throw new Error("找不到『個股交易紀錄』分頁,請先從選單執行初始化!");
 
-  const lastRow = sheet.getLastRow();
-  const nextRow = lastRow + 1;
   const price = parseFloat(data.price);
-  const shares = parseInt(data.shares);
+  const shares = parseInt(data.shares, 10);
   const fee = parseFloat(data.fee) || 0;
   if (isNaN(price) || isNaN(shares) || price <= 0 || shares <= 0) {
-    return "❌ 錯誤:單價與股數必須為正數!";
+    throw new Error("單價與股數必須為正數!");
+  }
+  if (fee < 0) {
+    throw new Error("手續費 / 稅金不可為負數!");
   }
 
   let tickerForSheet = data.ticker.trim().toUpperCase();
@@ -534,31 +538,47 @@ function addTransaction(data) {
   }
 
   const stockName = data.name ? data.name : getStockName(tickerForSheet);
-  sheet.getRange(nextRow, 1, 1, 7).setValues([[
-    data.date,
-    tickerForSheet,
-    stockName,
-    data.type,
-    price,
-    shares,
-    fee
-  ]]);
-  sheet.getRange(nextRow, 8).setFormula(
-    `=IF(D${nextRow}="買入", -(E${nextRow}*F${nextRow}+G${nextRow}), (E${nextRow}*F${nextRow}-G${nextRow}))`
-  );
+
+  // 文件鎖:避免並發送出時取得相同列號而互相覆蓋
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(10000);
+  try {
+    const nextRow = sheet.getLastRow() + 1;
+    sheet.getRange(nextRow, 1, 1, 7).setValues([[
+      data.date,
+      tickerForSheet,
+      stockName,
+      data.type,
+      price,
+      shares,
+      fee
+    ]]);
+    sheet.getRange(nextRow, 8).setFormula(
+      `=IF(D${nextRow}="買入", -(E${nextRow}*F${nextRow}+G${nextRow}), (E${nextRow}*F${nextRow}-G${nextRow}))`
+    );
+    SpreadsheetApp.flush(); // 確保寫入落地後才釋放鎖
+  } finally {
+    lock.releaseLock();
+  }
 
   // 自動更新 Dashboard 與年度收益總覽 (靜默更新，不切換焦點分頁)
+  const failed = [];
   try {
     rebuildDashboard_(ss, false);
   } catch (e) {
+    failed.push("Dashboard");
     Logger.log("自動重建 Dashboard 失敗: " + e);
   }
   try {
     rebuildYearly_(ss, false);
   } catch (e) {
+    failed.push("年度收益總覽");
     Logger.log("自動重建年度收益總覽失敗: " + e);
   }
 
+  if (failed.length > 0) {
+    return "⚠ 交易已寫入,但自動更新 " + failed.join("、") + " 失敗,請稍後從選單手動重建。";
+  }
   return "🎉 成功新增交易紀錄，且已自動更新 Dashboard 與年度收益總覽！";
 }
 
@@ -626,9 +646,7 @@ function rebuildDashboard_(ss, focus) {
 function writeDashboard_(dbSheet, holdings) {
   const DATA_START = 7;
   // 第 6 列表頭,第 7 列起為資料
-
-  const colWidths = [110, 160, 100, 90, 110, 120, 120, 120, 120, 100, 70, 110];
-  colWidths.forEach(function (w, i) { dbSheet.setColumnWidth(i + 1, w); });
+  // (欄寬統一由結尾的 autoResizeColumnsWithMin_ 設定)
 
   // ---- 摘要卡 ----
   dbSheet.getRange("A1:K4").setBackground("#f8fafc");
@@ -681,15 +699,20 @@ function writeDashboard_(dbSheet, holdings) {
     dbSheet.getRange(DATA_START, 1, staticRows.length, 12).setValues(staticRows);
 
     const fPrice = [], fMktVal = [], fUnreal = [], fTotal = [], fRoi = [];
-    const feeRate = getGlobalFeeRate();
+    // 防呆:舊版可能存過非純數字的費率字串,解析失敗就退回台股法定費率
+    let feeRate = parseFloat(getGlobalFeeRate());
+    if (isNaN(feeRate) || feeRate < 0) feeRate = 0.001425;
     for (let i = 0; i < holdings.length; i++) {
       const r = DATA_START + i;
-      fPrice.push(['=IFERROR(GOOGLEFINANCE($A' + r + ',"price"),0)']);
-      fMktVal.push(['=C' + r + '*D' + r]);
-      // 扣除預估賣出費用與證交稅以對齊券商 APP 淨損益（台股一般股票 0.3%，ETF 0.1%，其餘為 0）
-      const taxFormula = 'IF(LEFT($A' + r + ',4)="TPE:",IF(MID($A' + r + ',5,2)="00",0.001,0.003),0)';
-      fUnreal.push(['=F' + r + '-D' + r + '*E' + r + '-F' + r + '*(' + feeRate + '+' + taxFormula + ')']);
-      fTotal.push(['=G' + r + '+H' + r]);
+      // 現價抓不到時留空(而非當 0),避免未實現損益顯示成全額虧損
+      fPrice.push(['=IFERROR(GOOGLEFINANCE($A' + r + ',"price"),"")']);
+      fMktVal.push(['=IF(ISNUMBER($C' + r + '),C' + r + '*D' + r + ',"")']);
+      // 扣除預估賣出手續費與證交稅以對齊券商 APP 淨損益,僅台股適用
+      // (一般股票 0.3%,ETF 代號 00 開頭 0.1%;美股多為零手續費,不預扣)
+      const sellCostRate = 'IF(LEFT($A' + r + ',4)="TPE:",' + feeRate + '+IF(MID($A' + r + ',5,2)="00",0.001,0.003),0)';
+      fUnreal.push(['=IF(ISNUMBER($C' + r + '),F' + r + '-D' + r + '*E' + r + '-F' + r + '*' + sellCostRate + ',"")']);
+      // SUM 會自動略過留空的未實現損益,現價抓不到時仍顯示已實現部分
+      fTotal.push(['=SUM(G' + r + ',H' + r + ')']);
       fRoi.push(['=IF($L' + r + '=0,0,I' + r + '/$L' + r + ')']);
     }
     dbSheet.getRange(DATA_START, 3, holdings.length, 1).setFormulas(fPrice);   // C 現價

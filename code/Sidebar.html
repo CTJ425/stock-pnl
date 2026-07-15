@@ -90,7 +90,7 @@
     <div class="form-group">
       <label>交易股數</label>
       <div style="display: flex; gap: 8px;">
-        <input type="number" id="shares" placeholder="請輸入數量" style="flex: 1;">
+        <input type="number" id="shares" step="0.001" min="0" placeholder="請輸入數量" style="flex: 1;">
         <select id="unit" style="width: 80px; flex-shrink: 0;">
           <option value="張" selected>張</option>
           <option value="零股">零股</option>
@@ -104,7 +104,12 @@
     </div>
 
     <div class="form-group">
-      <label>手續費 / 稅金</label>
+      <label>證交稅率 (僅台股賣出計算，ETF 自動調為 0.1%)</label>
+      <input type="number" id="taxRate" step="0.0001" min="0" value="0.003">
+    </div>
+
+    <div class="form-group">
+      <label>手續費 / 稅金 (台股賣出自動含證交稅)</label>
       <input type="number" id="fee" value="0">
     </div>
     <button onclick="submitForm()">確認送出</button>
@@ -132,19 +137,39 @@
         })
         .getGlobalFeeRate();
 
-      // 自動換算手續費並填入欄位
+      // 證交稅率欄位：依代號自動帶入 (一般股票 0.3%，ETF 代號 00 開頭 0.1%)；
+      // 使用者手動改過就不再自動覆蓋，直到表單送出成功後重置
+      let taxRateManual = false;
+      function updateTaxRateField() {
+        const market = document.getElementById('market').value;
+        const type = document.getElementById('type').value;
+        const taxInput = document.getElementById('taxRate');
+        taxInput.disabled = !(market === 'TPE' && type === '賣出');
+        if (!taxRateManual) {
+          // ETF 判斷規則與 Dashboard 未實現損益公式一致 (代號前兩碼為 00)
+          const ticker = document.getElementById('ticker').value.trim().replace(/^TPE:/i, '');
+          taxInput.value = ticker.indexOf('00') === 0 ? '0.001' : '0.003';
+        }
+      }
+
+      // 自動換算手續費並填入欄位（台股賣出自動加計證交稅）
       function calculateFee() {
         const price = parseFloat(document.getElementById('price').value) || 0;
         const shares = getActualShares();
         const feeRate = parseFloat(document.getElementById('feeRate').value) || 0;
         const market = document.getElementById('market').value;
+        const type = document.getElementById('type').value;
 
         if (price > 0 && shares > 0) {
-          let calculatedFee = price * shares * feeRate;
+          let calculatedFee;
           if (market === 'TPE') {
-            calculatedFee = Math.round(calculatedFee); // 台股取整數
+            calculatedFee = Math.floor(price * shares * feeRate); // 券商手續費：元以下無條件捨去
+            if (type === '賣出') {
+              const taxRate = parseFloat(document.getElementById('taxRate').value) || 0;
+              calculatedFee += Math.floor(price * shares * taxRate); // 證交稅：元以下捨去
+            }
           } else {
-            calculatedFee = parseFloat(calculatedFee.toFixed(2)); // 美股保留兩位小數
+            calculatedFee = parseFloat((price * shares * feeRate).toFixed(2)); // 美股保留兩位小數
           }
           document.getElementById('fee').value = calculatedFee;
         }
@@ -171,10 +196,12 @@
               handleMarketChange();
             } else {
               nameInput.placeholder = '⚠ 查無此代號,請手動輸入';
+              lastSearchedTicker = ''; // 允許同一代號再次觸發反查
             }
           })
           .withFailureHandler(() => {
             nameInput.placeholder = '⚠ 查詢失敗,請手動輸入或稍後再試';
+            lastSearchedTicker = '';
           })
           .searchByTicker(ticker, market);
       });
@@ -255,11 +282,12 @@
         }
       });
 
-      // 當交易市場改變時，調整股數單位選單
+      // 當交易市場改變時，調整股數單位選單與證交稅欄位狀態
       function handleMarketChange() {
         const market = document.getElementById('market').value;
         const unitSelect = document.getElementById('unit');
-        
+        updateTaxRateField();
+
         if (market === '美股') {
           // 美股強制使用「零股」單位
           if (unitSelect.value === '張') {
@@ -306,6 +334,19 @@
       document.getElementById('shares').addEventListener('input', calculateFee);
       document.getElementById('feeRate').addEventListener('input', calculateFee);
       document.getElementById('market').addEventListener('change', handleMarketChange);
+      // 買入/賣出與代號會影響證交稅 (賣出才計稅、ETF 稅率不同)
+      document.getElementById('type').addEventListener('change', function() {
+        updateTaxRateField();
+        calculateFee();
+      });
+      document.getElementById('ticker').addEventListener('input', function() {
+        updateTaxRateField();
+        calculateFee();
+      });
+      document.getElementById('taxRate').addEventListener('input', function() {
+        taxRateManual = true;
+        calculateFee();
+      });
 
       function submitForm() {
         const dateInput = document.getElementById('date').value;
@@ -338,9 +379,12 @@
             document.getElementById('shares').value = '';
             document.getElementById('fee').value = '0';
             lastSearchedTicker = '';
-            setTimeout(() => document.getElementById('msg').innerText = '', 3000);
+            taxRateManual = false;
+            updateTaxRateField();
+            setTimeout(() => document.getElementById('msg').innerText = '', 5000);
           })
           .withFailureHandler(err => {
+            // 寫入失敗時保留所有輸入內容，僅顯示錯誤訊息
             document.getElementById('msg').innerText = '❌ 寫入失敗:' + (err && err.message ? err.message : '請稍後再試');
           })
           .addTransaction(data);
