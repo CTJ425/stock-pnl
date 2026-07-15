@@ -20,6 +20,7 @@ function buildMenu_() {
   menu.addItem('📊 建立/更新庫存總覽 Dashboard', 'createPortfolioDashboard');
   menu.addItem('📅 建立/更新年度收益總覽', 'createYearlyReport');
   menu.addSeparator();
+  menu.addItem('⚙ 設定全域預設手續費率', 'promptGlobalFeeRate');
   menu.addItem('🛠️ 初始化交易紀錄分頁', 'initializeTransactionSheet');
   
   // 讀取當前的介面模式設定
@@ -52,6 +53,32 @@ function setModeModal_() {
   PropertiesService.getUserProperties().setProperty('UI_MODE', 'MODAL');
   buildMenu_();
   SpreadsheetApp.getActiveSpreadsheet().toast('已將輸入介面切換為：對話框 (Modal Dialog)', '⚙ 介面設定');
+}
+
+// 彈出視窗供使用者設定全域手續費率
+function promptGlobalFeeRate() {
+  const ui = SpreadsheetApp.getUi();
+  const props = PropertiesService.getUserProperties();
+  const currentRate = props.getProperty('GLOBAL_FEE_RATE') || '0.001425';
+  const response = ui.prompt(
+    '⚙ 設定全域手續費率',
+    '請輸入預設的手續費百分比率 (小數格式，例如台股為 0.001425)：\n目前的設定為：' + currentRate,
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (response.getSelectedButton() === ui.Button.OK) {
+    const input = response.getResponseText().trim();
+    const rate = parseFloat(input);
+    if (isNaN(rate) || rate < 0) {
+      ui.alert('❌ 錯誤：請輸入有效且大於等於 0 的數字。');
+      return;
+    }
+    props.setProperty('GLOBAL_FEE_RATE', input);
+    ui.alert('🎉 全域預設手續費率已更新為：' + input);
+  }
+}
+
+function getGlobalFeeRate() {
+  return PropertiesService.getUserProperties().getProperty('GLOBAL_FEE_RATE') || '0.001425';
 }
 
 function showSidebar() {
