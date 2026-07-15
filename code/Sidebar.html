@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <style>
+      body { font-family: "Microsoft JhengHei", Arial, sans-serif; padding: 15px; font-size: 14px; background-color: #f7fafc; color: #333; }
+      .form-group { margin-bottom: 12px; position: relative; }
+      label { display: block; margin-bottom: 5px; font-weight: bold; color: #4a5568; }
+      input, select { width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #cbd5e0; border-radius: 6px; font-size: 14px; }
+      input:disabled { background-color: #edf2f7; color: #a0aec0; }
+
+      .suggestions-list {
+        position: absolute;
+        z-index: 1000;
+        background: white;
+        border: 1px solid #cbd5e0;
+        border-top: none;
+        border-radius: 0 0 6px 6px;
+        max-height: 200px;
+        overflow-y: auto;
+        width: 100%;
+        box-sizing: border-box;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+      }
+      .suggestion-item {
+        padding: 10px;
+        cursor: pointer;
+        border-bottom: 1px solid #edf2f7;
+        font-size: 13px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+      }
+      .suggestion-item:hover {
+        background-color: #ebf8ff;
+        color: #3182ce;
+      }
+      .suggestion-item:last-child { border-bottom: none; }
+      .market-tag {
+        flex-shrink: 0;
+        font-size: 11px;
+        color: #718096;
+        background: #edf2f7;
+        border-radius: 4px;
+        padding: 1px 6px;
+      }
+
+      button { width: 100%; padding: 10px; background-color: #3182ce; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; margin-top: 10px; font-size: 15px; }
+      button:hover { background-color: #2b6cb0; }
+      #msg { margin-top: 12px; color: #38a169; font-weight: bold; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <div class="form-group">
+      <label>交易日期</label>
+      <input type="date" id="date">
+    </div>
+
+    <div class="form-group">
+      <label>交易市場</label>
+      <select id="market">
+        <option value="TPE" selected>TPE (台股)</option>
+        <option value="美股">美股</option>
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label>股票代號 (台股 2330 / 美股 AAPL)</label>
+      <input type="text" id="ticker" placeholder="台股 2330 / 美股 AAPL" autocomplete="off">
+    </div>
+
+    <div class="form-group">
+      <label>股票名稱</label>
+      <input type="text" id="name" placeholder="輸入中文名稱可進行搜尋選擇" autocomplete="off">
+      <div id="suggestions" class="suggestions-list"></div>
+    </div>
+
+    <div class="form-group">
+      <label>交易類型</label>
+      <select id="type">
+        <option value="買入">買入</option>
+        <option value="賣出">賣出</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>交易單價</label>
+      <input type="number" id="price" step="0.01" placeholder="請輸入單股價格">
+    </div>
+    <div class="form-group">
+      <label>交易股數</label>
+      <input type="number" id="shares" placeholder="請輸入股數">
+    </div>
+    <div class="form-group">
+      <label>手續費 / 稅金</label>
+      <input type="number" id="fee" value="0">
+    </div>
+    <button onclick="submitForm()">確認送出</button>
+    <div id="msg"></div>
+
+    <script>
+      // 預設日期為今天
+      const today = new Date();
+      const year = today.getFullYear();
+      const month = String(today.getMonth() + 1).padStart(2, '0');
+      const day = String(today.getDate()).padStart(2, '0');
+      document.getElementById('date').value = `${year}-${month}-${day}`;
+
+      let lastSearchedTicker = '';
+
+      // 雙向連動 1:輸入「股票代號」 -> 自動帶出「股票名稱」
+      document.getElementById('ticker').addEventListener('blur', function() {
+        const ticker = this.value.trim().toUpperCase();
+        if (!ticker || ticker === lastSearchedTicker) return;
+
+        const market = document.getElementById('market').value;
+        const nameInput = document.getElementById('name');
+        nameInput.value = '';
+        nameInput.placeholder = '🔍 正在反查名稱...';
+
+        google.script.run
+          .withSuccessHandler(result => {
+            if (result) {
+              nameInput.value = result.name;
+              nameInput.placeholder = '';
+              document.getElementById('ticker').value = result.symbol;
+              document.getElementById('market').value = result.market;
+              lastSearchedTicker = result.symbol;
+            } else {
+              nameInput.placeholder = '⚠ 查無此代號,請手動輸入';
+            }
+          })
+          .withFailureHandler(() => {
+            nameInput.placeholder = '⚠ 查詢失敗,請手動輸入或稍後再試';
+          })
+          .searchByTicker(ticker, market);
+      });
+
+      // 雙向連動 2:輸入「股票名稱」 -> 下拉模糊搜尋對應「股票代號」
+      // searchSeq 用來丟棄過期的非同步回應,避免舊結果蓋掉新結果
+      let searchTimeout = null;
+      let searchSeq = 0;
+
+      document.getElementById('name').addEventListener('input', function() {
+        clearTimeout(searchTimeout);
+        const nameQuery = this.value.trim();
+        const suggestionsDiv = document.getElementById('suggestions');
+
+        if (!nameQuery) {
+          searchSeq++; // 讓仍在路上的舊請求全部失效
+          suggestionsDiv.innerHTML = '';
+          return;
+        }
+
+        searchTimeout = setTimeout(() => {
+          const mySeq = ++searchSeq;
+          google.script.run
+            .withSuccessHandler(results => {
+              if (mySeq !== searchSeq) return; // 過期回應,直接丟棄
+              suggestionsDiv.innerHTML = '';
+              if (results && results.length > 0) {
+                results.forEach(item => {
+                  const div = document.createElement('div');
+                  div.className = 'suggestion-item';
+
+                  const label = document.createElement('span');
+                  label.innerText = `${item.name} (${item.symbol})`;
+                  const tag = document.createElement('span');
+                  tag.className = 'market-tag';
+                  tag.innerText = item.market === 'TPE' ? '台股' : '美股';
+                  div.appendChild(label);
+                  div.appendChild(tag);
+
+                  // 點擊選項自動雙向同步
+                  div.addEventListener('click', () => {
+                    document.getElementById('name').value = item.name;
+                    document.getElementById('ticker').value = item.symbol;
+                    document.getElementById('market').value = item.market;
+                    lastSearchedTicker = item.symbol;
+                    suggestionsDiv.innerHTML = '';
+                  });
+                  suggestionsDiv.appendChild(div);
+                });
+              } else {
+                const div = document.createElement('div');
+                div.className = 'suggestion-item';
+                div.style.color = '#a0aec0';
+                div.innerText = '無匹配結果';
+                suggestionsDiv.appendChild(div);
+              }
+            })
+            .withFailureHandler(() => {
+              if (mySeq !== searchSeq) return;
+              suggestionsDiv.innerHTML = '';
+              const div = document.createElement('div');
+              div.className = 'suggestion-item';
+              div.style.color = '#e53e3e';
+              div.innerText = '搜尋失敗,請稍後再試';
+              suggestionsDiv.appendChild(div);
+            })
+            .searchByName(nameQuery);
+        }, 300);
+      });
+
+      // 解決 DOM 點擊競爭:非點擊 input 或選單區域時,自動關閉下拉框
+      document.addEventListener('click', function(e) {
+        const suggestionsDiv = document.getElementById('suggestions');
+        const nameInput = document.getElementById('name');
+        if (e.target !== nameInput && !suggestionsDiv.contains(e.target)) {
+          suggestionsDiv.innerHTML = '';
+        }
+      });
+
+      function submitForm() {
+        const dateInput = document.getElementById('date').value;
+        const formattedDate = dateInput ? dateInput.replace(/-/g, '/') : `${year}/${month}/${day}`;
+
+        const data = {
+          date: formattedDate,
+          market: document.getElementById('market').value,
+          ticker: document.getElementById('ticker').value.trim().toUpperCase(),
+          name: document.getElementById('name').value.trim(),
+          type: document.getElementById('type').value,
+          price: document.getElementById('price').value,
+          shares: document.getElementById('shares').value,
+          fee: document.getElementById('fee').value
+        };
+
+        if (!data.ticker || !data.price || !data.shares) {
+          alert('請填寫代號、單價與股數!');
+          return;
+        }
+
+        document.getElementById('msg').innerText = "⚡ 正在寫入試算表...";
+        google.script.run
+          .withSuccessHandler(res => {
+            document.getElementById('msg').innerText = res;
+            document.getElementById('ticker').value = '';
+            document.getElementById('name').value = '';
+            document.getElementById('price').value = '';
+            document.getElementById('shares').value = '';
+            document.getElementById('fee').value = '0';
+            lastSearchedTicker = '';
+            setTimeout(() => document.getElementById('msg').innerText = '', 3000);
+          })
+          .withFailureHandler(err => {
+            document.getElementById('msg').innerText = '❌ 寫入失敗:' + (err && err.message ? err.message : '請稍後再試');
+          })
+          .addTransaction(data);
+      }
+    </script>
+  </body>
+</html>

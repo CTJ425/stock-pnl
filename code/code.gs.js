@@ -1,0 +1,617 @@
+/* =========================================================
+ * 系統設定與開關
+ * ========================================================= */
+// 調整欄位寬度模式：
+// - 'PRESET'  : 直接套用預設最合適欄寬 (極快，推薦！完全不會有卡頓感)
+// - 'DYNAMIC' : 動態依儲存格內容調整並限制最小寬度 (較慢，為原本的模式)
+// - 'OFF'     : 完全關閉欄寬調整功能，保留使用者手動調整的欄寬 (不耗費任何時間)
+const COLUMN_RESIZE_MODE = 'PRESET';
+
+function onOpen() {
+  buildMenu_();
+}
+
+// 動態建立選單，以呈現當前選用的介面樣式勾選狀態
+function buildMenu_() {
+  const ui = SpreadsheetApp.getUi();
+  const menu = ui.createMenu('⚡️ 股票小幫手');
+  
+  menu.addItem('💰 買賣輸入', 'showSidebar');
+  menu.addItem('📊 建立/更新庫存總覽 Dashboard', 'createPortfolioDashboard');
+  menu.addItem('📅 建立/更新年度收益總覽', 'createYearlyReport');
+  
+  // 讀取當前的介面模式設定
+  const props = PropertiesService.getUserProperties();
+  const mode = props.getProperty('UI_MODE') || 'SIDEBAR';
+  
+  // 建立設定子選單，並在目前選中的模式前面加上勾選符號 (✅ / ⬜)
+  const subMenu = ui.createMenu('⚙ 設定輸入介面樣式');
+  subMenu.addItem((mode === 'SIDEBAR' ? '✅ ' : '⬜ ') + '側邊欄 (Sidebar)', 'setModeSidebar_');
+  subMenu.addItem((mode === 'MODELESS' ? '✅ ' : '⬜ ') + '浮動視窗 (Modeless Dialog)', 'setModeModeless_');
+  subMenu.addItem((mode === 'MODAL' ? '✅ ' : '⬜ ') + '對話框 (Modal Dialog)', 'setModeModal_');
+  
+  menu.addSubMenu(subMenu);
+  menu.addToUi();
+}
+
+function setModeSidebar_() {
+  PropertiesService.getUserProperties().setProperty('UI_MODE', 'SIDEBAR');
+  buildMenu_();
+  SpreadsheetApp.getActiveSpreadsheet().toast('已將輸入介面切換為：側邊欄 (Sidebar)', '⚙ 介面設定');
+}
+
+function setModeModeless_() {
+  PropertiesService.getUserProperties().setProperty('UI_MODE', 'MODELESS');
+  buildMenu_();
+  SpreadsheetApp.getActiveSpreadsheet().toast('已將輸入介面切換為：浮動視窗 (Modeless Dialog)', '⚙ 介面設定');
+}
+
+function setModeModal_() {
+  PropertiesService.getUserProperties().setProperty('UI_MODE', 'MODAL');
+  buildMenu_();
+  SpreadsheetApp.getActiveSpreadsheet().toast('已將輸入介面切換為：對話框 (Modal Dialog)', '⚙ 介面設定');
+}
+
+function showSidebar() {
+  const html = HtmlService.createHtmlOutputFromFile('Sidebar')
+    .setTitle('新增交易紀錄')
+    .setWidth(320)
+    .setHeight(600); // 浮動視窗模式需要有高度設定，側邊欄則會自動忽略
+    
+  const mode = PropertiesService.getUserProperties().getProperty('UI_MODE') || 'SIDEBAR';
+  const ui = SpreadsheetApp.getUi();
+  
+  if (mode === 'MODELESS') {
+    ui.showModelessDialog(html, '新增交易紀錄');
+  } else if (mode === 'MODAL') {
+    ui.showModalDialog(html, '新增交易紀錄');
+  } else {
+    // 預設與 'SIDEBAR' 模式
+    ui.showSidebar(html);
+  }
+}
+
+/* =========================================================
+ * 共用工具
+ * ========================================================= */
+
+// 自動重試:遇到 Google 服務暫時性錯誤時,等待後重試最多 3 次
+function withRetry_(fn, label) {
+  let lastErr;
+  for (let i = 0; i < 3; i++) {
+    try {
+      return fn();
+    } catch (e) {
+      lastErr = e;
+      Logger.log("withRetry_ [" + label + "] 第 " + (i + 1) + " 次失敗: " + e);
+      Utilities.sleep(1500 * (i + 1));
+    }
+  }
+  throw lastErr;
+}
+
+// 清空重用分頁(不刪除重建,避免服務競態;分頁位置也不會跑掉)
+function resetSheet_(ss, name) {
+  let sheet = ss.getSheetByName(name);
+  if (sheet) {
+    const filter = sheet.getFilter();
+    if (filter) filter.remove();
+    try { sheet.setConditionalFormatRules([]); } catch (e) { Logger.log("清除條件式格式失敗(忽略): " + e); }
+    sheet.clear();
+    return sheet;
+  }
+  return ss.insertSheet(name);
+}
+
+// 自動調整欄寬並限制最小寬度，支援不同模式以提升執行速度
+function autoResizeColumnsWithMin_(sheet, startCol, endCol, minWidths) {
+  try {
+    const mode = (typeof COLUMN_RESIZE_MODE !== 'undefined') ? COLUMN_RESIZE_MODE : 'PRESET';
+    
+    if (mode === 'OFF') {
+      // 關閉此功能，直接跳過以求最快速度
+      return;
+    }
+    
+    if (mode === 'DYNAMIC') {
+      // 模式 1: 動態調整寬度並套用最小限制 (慢)
+      sheet.autoResizeColumns(startCol, endCol - startCol + 1);
+      for (let col = startCol; col <= endCol; col++) {
+        const idx = col - startCol;
+        const minW = minWidths[idx] || 100;
+        const currentW = sheet.getColumnWidth(col);
+        if (currentW < minW) {
+          sheet.setColumnWidth(col, minW);
+        }
+      }
+    } else {
+      // 模式 2: PRESET (預設) - 直接套用預設的欄寬陣列 (極快，跳過動態字元長度計算)
+      for (let col = startCol; col <= endCol; col++) {
+        const idx = col - startCol;
+        const minW = minWidths[idx] || 100;
+        sheet.setColumnWidth(col, minW);
+      }
+    }
+  } catch (e) {
+    Logger.log("調整欄寬失敗: " + e);
+  }
+}
+
+// 支援 Date 物件與 "2026/07/15"、"2026-07-15" 字串
+function parseTxDate_(v) {
+  if (v instanceof Date && !isNaN(v.getTime())) return v;
+  if (typeof v === "string") {
+    const m = v.trim().match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+    if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  }
+  return null;
+}
+
+/* =========================================================
+ * 共用計算引擎:讀取交易紀錄,以「移動平均成本法」逐筆計算
+ * - Dashboard 與年度收益總覽共用,確保兩邊數字一致
+ * - 回傳:各股票目前部位 / 各年度損益 / 資料異常警告
+ * ========================================================= */
+function computeLedger_(recordSheet) {
+  const result = { tickers: {}, tickerOrder: [], yearly: {}, warnings: [] };
+  const lastRow = recordSheet.getLastRow();
+  if (lastRow < 2) return result;
+  const values = recordSheet.getRange(2, 1, lastRow - 1, 7).getValues();
+  const txs = [];
+  values.forEach(function (row, i) {
+    const date = parseTxDate_(row[0]);
+    const ticker = String(row[1] || "").trim();
+    const name = String(row[2] || "").trim();
+    const type = String(row[3] || "").trim();
+    const price = Number(row[4]) || 0;
+    const shares = Number(row[5]) || 0;
+    const fee = Number(row[6]) || 0;
+    if (!date || !ticker || (type !== "買入" && type !== "賣出") || shares <= 0) return;
+    txs.push({ date: date, order: i, ticker: ticker, name: name, type: type, price: price, shares: shares, fee: fee });
+  });
+  // 依日期排序;同日依輸入順序
+  txs.sort(function (a, b) { return a.date - b.date || a.order - b.order; });
+  txs.forEach(function (tx) {
+    const year = tx.date.getFullYear();
+    if (!result.yearly[year]) {
+      result.yearly[year] = { realizedTw: 0, realizedUs: 0, buyAmt: 0, sellAmt: 0, fees: 0, count: 0 };
+    }
+    const y = result.yearly[year];
+    const isTw = tx.ticker.indexOf("TPE:") === 0;
+
+    if (!result.tickers[tx.ticker]) {
+      result.tickers[tx.ticker] = {
+        name: tx.name || tx.ticker,
+        qty: 0,          // 目前持有股數
+        cost: 0,           // 目前部位成本
+        buyCostTotal: 0,   // 歷史累計買入成本(報酬率分母)
+        realized: 0,       // 累計已實現損益
+        currency: isTw ? "TWD" : "USD"
+      };
+      result.tickerOrder.push(tx.ticker);
+    }
+    const pos = result.tickers[tx.ticker];
+    if (tx.name) pos.name = tx.name;
+
+    y.count++;
+    y.fees += tx.fee;
+
+    if (tx.type === "買入") {
+      const totalCost = tx.price * tx.shares + tx.fee; // 手續費計入成本
+      y.buyAmt += totalCost;
+      pos.cost += totalCost;
+      pos.qty += tx.shares;
+      pos.buyCostTotal += totalCost;
+    } else {
+      const revenue = tx.price * tx.shares - tx.fee;
+      y.sellAmt += revenue;
+
+      const avgCost = pos.qty > 0 ? pos.cost / pos.qty : 0;
+      const matchedQty = Math.min(tx.shares, pos.qty);
+      if (matchedQty < tx.shares) {
+        result.warnings.push(
+          Utilities.formatDate(tx.date, Session.getScriptTimeZone(), "yyyy/MM/dd") +
+          " " + tx.ticker + " 賣出 " + tx.shares + " 股,但當時持有僅 " + pos.qty + " 股(超賣部分成本以 0 計算)"
+        );
+      }
+      const costBasis = avgCost * matchedQty;
+      const realized = revenue - costBasis;
+      pos.cost -= costBasis;
+      pos.qty -= matchedQty;
+      pos.realized += realized;
+
+      if (isTw) y.realizedTw += realized;
+      else y.realizedUs += realized;
+    }
+  });
+
+  return result;
+}
+
+/* =========================================================
+ * 股票搜尋模組
+ * - 台股(上市):證交所官方 codeQuery API → 原生繁體中文,雙向模糊查詢
+ * - 台股(上櫃):櫃買中心 OpenAPI 全清單 + 本地比對(快取 6 小時)
+ * - 美股:Yahoo Finance 全球搜尋(英文名稱屬正常)
+ * ========================================================= */
+
+const SEARCH_CACHE_SEC = 21600; // 6 小時
+const MAX_RESULTS = 10;
+
+function hasCJK_(str) {
+  return /[\u4e00-\u9fff]/.test(str);
+}
+
+function searchTwseListed_(query) {
+  const url = "https://www.twse.com.tw/rwd/zh/api/codeQuery?query=" + encodeURIComponent(query);
+  try {
+    const res = UrlFetchApp.fetch(url, {
+      muteHttpExceptions: true,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Accept": "application/json"
+      }
+    });
+    if (res.getResponseCode() !== 200) return [];
+    const json = JSON.parse(res.getContentText("UTF-8"));
+    if (!json || !Array.isArray(json.suggestions)) return [];
+    return json.suggestions
+      .map(function (s) {
+        const parts = String(s).split("\t");
+        if (parts.length < 2) return null;
+        return { symbol: parts[0].trim(), name: parts[1].trim(), market: "TPE" };
+      })
+      .filter(function (x) { return x && x.symbol && x.name; });
+  } catch (e) {
+    Logger.log("searchTwseListed_ Error: " + e);
+    return [];
+  }
+}
+
+function getOtcList_() {
+  const cache = CacheService.getScriptCache();
+  const hit = cache.get("otc_list_v1");
+  if (hit) {
+    try { return JSON.parse(hit);
+    } catch (e) { /* 快取損毀則重新下載 */ }
+  }
+  try {
+    const res = UrlFetchApp.fetch("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", {
+      muteHttpExceptions: true,
+      headers: { "Accept": "application/json" }
+    });
+    if (res.getResponseCode() === 200) {
+      const arr = JSON.parse(res.getContentText("UTF-8"));
+      if (!Array.isArray(arr)) return [];
+      const list = arr
+        .map(function (r) {
+          return {
+            symbol: String(r.SecuritiesCompanyCode || r.Code || "").trim(),
+            name: String(r.CompanyName || r.Name || "").trim(),
+            market: "TPE"
+          };
+        })
+        .filter(function (x) { return x.symbol && x.name; });
+      try {
+        cache.put("otc_list_v1", JSON.stringify(list), SEARCH_CACHE_SEC);
+      } catch (e) { /* 超過快取大小上限就不快取,功能不受影響 */ }
+      return list;
+    }
+  } catch (e) {
+    Logger.log("getOtcList_ Error: " + e);
+  }
+  return [];
+}
+
+function searchOtc_(query) {
+  const q = String(query).toUpperCase();
+  return getOtcList_().filter(function (x) {
+    return x.symbol.indexOf(q) === 0 || x.name.indexOf(query) !== -1;
+  });
+}
+
+function searchYahooFinance(query) {
+  if (!query) return [];
+  const url = "https://query2.finance.yahoo.com/v1/finance/search?q=" + encodeURIComponent(query);
+  try {
+    const response = UrlFetchApp.fetch(url, {
+      muteHttpExceptions: true,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      }
+    });
+    if (response.getResponseCode() !== 200) return [];
+    const json = JSON.parse(response.getContentText("UTF-8"));
+    if (!json || !Array.isArray(json.quotes)) return [];
+    return json.quotes
+      .filter(function (q) {
+        return q.symbol && (q.quoteType === "EQUITY" || q.quoteType === "ETF");
+      })
+      .map(function (q) {
+        let symbol = q.symbol;
+        let market = "美股";
+        if (symbol.endsWith(".TW") || symbol.endsWith(".TWO")) {
+          symbol = symbol.replace(".TW", "").replace(".TWO", "");
+          market = "TPE";
+        }
+        return {
+          symbol: symbol,
+          name: q.shortname || q.longname || symbol,
+          market: market
+        };
+      });
+  } catch (e) {
+    Logger.log("searchYahooFinance Error: " + e);
+    return [];
+  }
+}
+
+function mergeUnique_(a, b) {
+  const seen = {};
+  return a.concat(b).filter(function (x) {
+    const key = x.market + ":" + x.symbol;
+    if (seen[key]) return false;
+    seen[key] = true;
+    return true;
+  });
+}
+
+function unifiedSearch(query) {
+  if (!query) return [];
+  const q = String(query).trim();
+  if (!q) return [];
+
+  const cache = CacheService.getScriptCache();
+  const cacheKey = ("q_" + encodeURIComponent(q)).slice(0, 240);
+  const hit = cache.get(cacheKey);
+  if (hit) {
+    try { return JSON.parse(hit);
+    } catch (e) { /* ignore */ }
+  }
+
+  let results = [];
+  const looksTaiwan = hasCJK_(q) || /^\d{3,6}[A-Z]?$/i.test(q);
+
+  if (looksTaiwan) {
+    results = mergeUnique_(searchTwseListed_(q), searchOtc_(q));
+    if (results.length === 0) results = searchYahooFinance(q);
+  } else {
+    results = searchYahooFinance(q);
+    if (results.length === 0) results = mergeUnique_(searchTwseListed_(q), searchOtc_(q));
+  }
+
+  results = results.slice(0, MAX_RESULTS);
+  try { cache.put(cacheKey, JSON.stringify(results), SEARCH_CACHE_SEC);
+  } catch (e) { /* ignore */ }
+  return results;
+}
+
+function searchByTicker(ticker, selectedMarket) {
+  if (!ticker) return null;
+  const cleanTicker = String(ticker).trim().toUpperCase();
+  const results = unifiedSearch(cleanTicker);
+  if (results && results.length > 0) {
+    const exactMarketMatch = results.find(function (r) { return r.symbol === cleanTicker && r.market === selectedMarket; });
+    if (exactMarketMatch) return exactMarketMatch;
+    const exactMatch = results.find(function (r) { return r.symbol === cleanTicker; });
+    if (exactMatch) return exactMatch;
+    const marketMatch = results.find(function (r) { return r.market === selectedMarket; });
+    if (marketMatch) return marketMatch;
+    return results[0];
+  }
+  return null;
+}
+
+function searchByName(name) {
+  return unifiedSearch(name);
+}
+
+function getStockName(ticker) {
+  let cleanTicker = ticker;
+  let market = "美股";
+  if (ticker.startsWith("TPE:")) {
+    cleanTicker = ticker.replace("TPE:", "");
+    market = "TPE";
+  }
+  const res = searchByTicker(cleanTicker, market);
+  return res ? res.name : ticker;
+}
+
+function addTransaction(data) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName("個股交易紀錄");
+  if (!sheet) return "錯誤:找不到『個股交易紀錄』分頁!";
+
+  const lastRow = sheet.getLastRow();
+  const nextRow = lastRow + 1;
+  const price = parseFloat(data.price);
+  const shares = parseInt(data.shares);
+  const fee = parseFloat(data.fee) || 0;
+  if (isNaN(price) || isNaN(shares) || price <= 0 || shares <= 0) {
+    return "❌ 錯誤:單價與股數必須為正數!";
+  }
+
+  let tickerForSheet = data.ticker.trim().toUpperCase();
+  if (data.market === "TPE" && !tickerForSheet.startsWith("TPE:")) {
+    tickerForSheet = "TPE:" + tickerForSheet;
+  }
+
+  const stockName = data.name ? data.name : getStockName(tickerForSheet);
+  sheet.getRange(nextRow, 1, 1, 7).setValues([[
+    data.date,
+    tickerForSheet,
+    stockName,
+    data.type,
+    price,
+    shares,
+    fee
+  ]]);
+  sheet.getRange(nextRow, 8).setFormula(
+    `=IF(D${nextRow}="買入", -(E${nextRow}*F${nextRow}+G${nextRow}), (E${nextRow}*F${nextRow}-G${nextRow}))`
+  );
+
+  // 自動更新 Dashboard 與年度收益總覽 (靜默更新，不切換焦點分頁)
+  try {
+    rebuildDashboard_(ss, false);
+  } catch (e) {
+    Logger.log("自動重建 Dashboard 失敗: " + e);
+  }
+  try {
+    rebuildYearly_(ss, false);
+  } catch (e) {
+    Logger.log("自動重建年度收益總覽失敗: " + e);
+  }
+
+  return "🎉 成功新增交易紀錄，且已自動更新 Dashboard 與年度收益總覽！";
+}
+
+/* =========================================================
+ * 庫存總覽 Dashboard(穩定版)
+ * - 統計數字由 Apps Script 在記憶體算好後寫入「靜態值」,
+ * 試算表內只留每列一條輕量 GOOGLEFINANCE 抓現價 + 簡單算式,
+ * 徹底移除原本 LET+REDUCE+LAMBDA 巨型公式造成的服務不穩定
+ * - 已實現損益採移動平均成本法(與年度收益總覽一致)
+ * - 摘要卡:台股 (TWD) / 美股 (USD) 分開統計
+ * - L 欄為隱藏的「累計買入成本」,僅供報酬率計算
+ * ========================================================= */
+function createPortfolioDashboard() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+  if (!ss.getSheetByName("個股交易紀錄")) {
+    ui.alert("❌ 錯誤:找不到『個股交易紀錄』分頁!");
+    return;
+  }
+
+  let ledger;
+  try {
+    ledger = rebuildDashboard_(ss, true);
+  } catch (e) {
+    ui.alert("❌ Google 試算表服務暫時異常,已自動重試 3 次仍失敗。\n請稍候一分鐘後再執行一次即可。\n\n技術訊息:" + e);
+    return;
+  }
+
+  let msg = "🎉 庫存總覽 Dashboard 建立完成!(台股 TWD / 美股 USD 分開統計)";
+  if (ledger.warnings.length > 0) {
+    msg += "\n\n⚠ 發現 " + ledger.warnings.length + " 筆資料異常(如超賣),已以持有股數為上限計算,詳見執行紀錄。";
+    ledger.warnings.forEach(function (w) { Logger.log("資料異常: " + w); });
+  }
+  ui.alert(msg);
+}
+
+// 靜默重建 Dashboard(選單 / 新增交易共用);回傳 ledger
+function rebuildDashboard_(ss, focus) {
+  const recordSheet = ss.getSheetByName("個股交易紀錄");
+  if (!recordSheet) throw new Error("找不到『個股交易紀錄』分頁");
+
+  // 步驟 1:先在記憶體完成所有計算(此階段不寫入任何分頁,失敗不留半成品)
+  const ledger = computeLedger_(recordSheet);
+  const holdings = ledger.tickerOrder
+    .map(function (t) { return { ticker: t, info: ledger.tickers[t] }; })
+    .filter(function (x) { return x.info.buyCostTotal > 0; })
+    .sort(function (a, b) {
+      if (a.info.currency !== b.info.currency) return a.info.currency === "TWD" ? -1 : 1;
+      return a.ticker < b.ticker ? -1 : (a.ticker > b.ticker ? 1 : 0);
+    });
+  // 步驟 2:重設分頁並寫入(自動重試)
+  withRetry_(function () {
+    const dbSheet = resetSheet_(ss, "庫存總覽 Dashboard");
+    writeDashboard_(dbSheet, holdings);
+    if (focus) ss.setActiveSheet(dbSheet);
+  }, "建立庫存總覽 Dashboard");
+  return ledger;
+}
+
+function writeDashboard_(dbSheet, holdings) {
+  const DATA_START = 7;
+  // 第 6 列表頭,第 7 列起為資料
+
+  const colWidths = [110, 160, 100, 90, 110, 120, 120, 120, 120, 100, 70, 110];
+  colWidths.forEach(function (w, i) { dbSheet.setColumnWidth(i + 1, w); });
+
+  // ---- 摘要卡 ----
+  dbSheet.getRange("A1:K4").setBackground("#f8fafc");
+  // 台股 (TWD) — 第 1~2 列
+  dbSheet.getRange("A1").setValue("🇹🇼 台股持倉市值 (TWD)").setFontWeight("bold").setFontColor("#64748b");
+  dbSheet.getRange("A2").setFormula('=SUMIFS(F7:F, K7:K, "TWD")')
+    .setFontWeight("bold").setFontSize(14).setNumberFormat('"NT$"#,##0');
+
+  dbSheet.getRange("C1").setValue("台股未實現損益").setFontWeight("bold").setFontColor("#64748b");
+  dbSheet.getRange("C2").setFormula('=SUMIFS(G7:G, K7:K, "TWD")')
+    .setFontWeight("bold").setFontSize(14).setNumberFormat('[Red]"NT$"#,##0;[Green]-"NT$"#,##0;"NT$"0');
+
+  dbSheet.getRange("E1").setValue("台股已實現損益").setFontWeight("bold").setFontColor("#64748b");
+  dbSheet.getRange("E2").setFormula('=SUMIFS(H7:H, K7:K, "TWD")')
+    .setFontWeight("bold").setFontSize(14).setNumberFormat('[Red]"NT$"#,##0;[Green]-"NT$"#,##0;"NT$"0');
+
+  dbSheet.getRange("G1").setValue("台股總損益 (TWD)").setFontWeight("bold").setFontColor("#1e293b");
+  dbSheet.getRange("G2").setFormula("=C2+E2")
+    .setFontWeight("bold").setFontSize(16).setNumberFormat('[Red]"NT$"#,##0;[Green]-"NT$"#,##0;"NT$"0');
+
+  // 美股 (USD) — 第 3~4 列
+  dbSheet.getRange("A3").setValue("🇺🇸 美股持倉市值 (USD)").setFontWeight("bold").setFontColor("#64748b");
+  dbSheet.getRange("A4").setFormula('=SUMIFS(F7:F, K7:K, "USD")')
+    .setFontWeight("bold").setFontSize(14).setNumberFormat('"US$"#,##0.00');
+
+  dbSheet.getRange("C3").setValue("美股未實現損益").setFontWeight("bold").setFontColor("#64748b");
+  dbSheet.getRange("C4").setFormula('=SUMIFS(G7:G, K7:K, "USD")')
+    .setFontWeight("bold").setFontSize(14).setNumberFormat('[Red]"US$"#,##0.00;[Green]-"US$"#,##0.00;"US$"0.00');
+
+  dbSheet.getRange("E3").setValue("美股已實現損益").setFontWeight("bold").setFontColor("#64748b");
+  dbSheet.getRange("E4").setFormula('=SUMIFS(H7:H, K7:K, "USD")')
+    .setFontWeight("bold").setFontSize(14).setNumberFormat('[Red]"US$"#,##0.00;[Green]-"US$"#,##0.00;"US$"0.00');
+
+  dbSheet.getRange("G3").setValue("美股總損益 (USD)").setFontWeight("bold").setFontColor("#1e293b");
+  dbSheet.getRange("G4").setFormula("=C4+E4")
+    .setFontWeight("bold").setFontSize(16).setNumberFormat('[Red]"US$"#,##0.00;[Green]-"US$"#,##0.00;"US$"0.00');
+  // ---- 表頭 ----
+  const header = ["股票代號", "股票名稱", "目前現價", "持有股數", "平均買入成本", "目前市值", "未實現損益", "已實現損益", "累計總損益", "總報酬率", "幣別", "累計買入成本"];
+  dbSheet.getRange(6, 1, 1, header.length).setValues([header])
+    .setBackground("#1e293b").setFontColor("#ffffff").setFontWeight("bold").setHorizontalAlignment("center");
+
+  // ---- 資料列:靜態值 + 輕量公式 ----
+  if (holdings.length > 0) {
+    const staticRows = holdings.map(function (h) {
+      const info = h.info;
+      const avgCost = info.qty > 0 ? info.cost / info.qty : 0;
+      // C/F/G/I/J 先留空,稍後以公式覆蓋
+      return [h.ticker, info.name, "", info.qty, avgCost, "", "", info.realized, "", "", info.currency, info.buyCostTotal];
+    });
+    dbSheet.getRange(DATA_START, 1, staticRows.length, 12).setValues(staticRows);
+
+    const fPrice = [], fMktVal = [], fUnreal = [], fTotal = [], fRoi = [];
+    for (let i = 0; i < holdings.length; i++) {
+      const r = DATA_START + i;
+      fPrice.push(['=IFERROR(GOOGLEFINANCE($A' + r + ',"price"),0)']);
+      fMktVal.push(['=C' + r + '*D' + r]);
+      fUnreal.push(['=F' + r + '-D' + r + '*E' + r]);
+      fTotal.push(['=G' + r + '+H' + r]);
+      fRoi.push(['=IF($L' + r + '=0,0,I' + r + '/$L' + r + ')']);
+    }
+    dbSheet.getRange(DATA_START, 3, holdings.length, 1).setFormulas(fPrice);   // C 現價
+    dbSheet.getRange(DATA_START, 6, holdings.length, 1).setFormulas(fMktVal);
+    // F 市值
+    dbSheet.getRange(DATA_START, 7, holdings.length, 1).setFormulas(fUnreal);  // G 未實現
+    dbSheet.getRange(DATA_START, 9, holdings.length, 1).setFormulas(fTotal);
+    // I 累計總損益
+    dbSheet.getRange(DATA_START, 10, holdings.length, 1).setFormulas(fRoi);
+    // J 報酬率
+  }
+
+  // ---- 數字格式 ----
+  const endRow = Math.max(DATA_START + holdings.length - 1, 120);
+  dbSheet.getRange("C7:J" + endRow).setHorizontalAlignment("right");
+  dbSheet.getRange("C7:C" + endRow).setNumberFormat("$#,##0.00");
+  dbSheet.getRange("D7:D" + endRow).setNumberFormat("#,##0");
+  dbSheet.getRange("E7:F" + endRow).setNumberFormat("$#,##0.00");
+  dbSheet.getRange("G7:I" + endRow).setNumberFormat('[Red]$#,##0.00;[Green]-$#,##0.00;$0.00');
+  dbSheet.getRange("J7:J" + endRow).setNumberFormat('[Red]0.00%;[Green]-0.00%;0.00%');
+  dbSheet.getRange("K7:K" + endRow).setHorizontalAlignment("center").setFontColor("#64748b");
+
+  // 自動擴展欄寬（限制最小寬度防止 GOOGLEFINANCE 載入中縮排）
+  autoResizeColumnsWithMin_(dbSheet, 1, 11, [110, 160, 100, 90, 110, 120, 120, 120, 120, 100, 70]);
+
+  dbSheet.hideColumns(12); // L 欄僅供報酬率計算,隱藏不顯示
+
+  // 紅漲綠跌:一律以數字格式的 [Red]/[Green] 呈現。
+  // 本文件的條件式格式服務層已確認異常(系統診斷定位),故正式功能完全不使用條件式格式。
+}
