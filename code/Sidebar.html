@@ -7,7 +7,7 @@
       .form-group { margin-bottom: 12px; position: relative; }
       label { display: block; margin-bottom: 5px; font-weight: bold; color: #4a5568; }
       input, select { width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #cbd5e0; border-radius: 6px; font-size: 14px; }
-      input:disabled { background-color: #edf2f7; color: #a0aec0; }
+      input:disabled, select:disabled { background-color: #edf2f7; color: #a0aec0; }
 
       .suggestions-list {
         position: absolute;
@@ -89,7 +89,13 @@
     </div>
     <div class="form-group">
       <label>交易股數</label>
-      <input type="number" id="shares" placeholder="請輸入股數">
+      <div style="display: flex; gap: 8px;">
+        <input type="number" id="shares" placeholder="請輸入數量" style="flex: 1;">
+        <select id="unit" style="width: 80px; flex-shrink: 0;">
+          <option value="張" selected>張</option>
+          <option value="零股">零股</option>
+        </select>
+      </div>
     </div>
 
     <div class="form-group">
@@ -118,18 +124,18 @@
       google.script.run
         .withSuccessHandler(rate => {
           document.getElementById('feeRate').value = rate;
-          calculateFee();
+          handleMarketChange();
         })
         .withFailureHandler(() => {
           document.getElementById('feeRate').value = '0.001425';
-          calculateFee();
+          handleMarketChange();
         })
         .getGlobalFeeRate();
 
       // 自動換算手續費並填入欄位
       function calculateFee() {
         const price = parseFloat(document.getElementById('price').value) || 0;
-        const shares = parseInt(document.getElementById('shares').value) || 0;
+        const shares = getActualShares();
         const feeRate = parseFloat(document.getElementById('feeRate').value) || 0;
         const market = document.getElementById('market').value;
 
@@ -162,7 +168,7 @@
               document.getElementById('ticker').value = result.symbol;
               document.getElementById('market').value = result.market;
               lastSearchedTicker = result.symbol;
-              calculateFee();
+              handleMarketChange();
             } else {
               nameInput.placeholder = '⚠ 查無此代號,請手動輸入';
             }
@@ -215,7 +221,7 @@
                     document.getElementById('market').value = item.market;
                     lastSearchedTicker = item.symbol;
                     suggestionsDiv.innerHTML = '';
-                    calculateFee();
+                    handleMarketChange();
                   });
                   suggestionsDiv.appendChild(div);
                 });
@@ -249,15 +255,62 @@
         }
       });
 
+      // 當交易市場改變時，調整股數單位選單
+      function handleMarketChange() {
+        const market = document.getElementById('market').value;
+        const unitSelect = document.getElementById('unit');
+        
+        if (market === '美股') {
+          // 美股強制使用「零股」單位
+          if (unitSelect.value === '張') {
+            unitSelect.value = '零股';
+            unitSelect.dispatchEvent(new Event('change'));
+          }
+          unitSelect.disabled = true;
+        } else {
+          unitSelect.disabled = false;
+        }
+        calculateFee();
+      }
+
+      // 股數單位切換時的數值自動換算
+      let previousUnit = document.getElementById('unit').value;
+      document.getElementById('unit').addEventListener('change', function() {
+        const currentUnit = this.value;
+        const input = document.getElementById('shares');
+        const val = parseFloat(input.value);
+
+        if (!isNaN(val)) {
+          if (previousUnit === '張' && currentUnit === '零股') {
+            input.value = Math.round(val * 1000);
+          } else if (previousUnit === '零股' && currentUnit === '張') {
+            input.value = parseFloat((val / 1000).toFixed(3));
+          }
+        }
+        previousUnit = currentUnit;
+        calculateFee();
+      });
+
+      // 取得實際股數 (換算成「股」)
+      function getActualShares() {
+        const val = parseFloat(document.getElementById('shares').value) || 0;
+        const unit = document.getElementById('unit').value;
+        if (unit === '張') {
+          return Math.round(val * 1000);
+        }
+        return Math.round(val);
+      }
+
       // 綁定輸入監聽事件以自動換算手續費
       document.getElementById('price').addEventListener('input', calculateFee);
       document.getElementById('shares').addEventListener('input', calculateFee);
       document.getElementById('feeRate').addEventListener('input', calculateFee);
-      document.getElementById('market').addEventListener('change', calculateFee);
+      document.getElementById('market').addEventListener('change', handleMarketChange);
 
       function submitForm() {
         const dateInput = document.getElementById('date').value;
         const formattedDate = dateInput ? dateInput.replace(/-/g, '/') : `${year}/${month}/${day}`;
+        const actualShares = getActualShares();
 
         const data = {
           date: formattedDate,
@@ -266,11 +319,11 @@
           name: document.getElementById('name').value.trim(),
           type: document.getElementById('type').value,
           price: document.getElementById('price').value,
-          shares: document.getElementById('shares').value,
+          shares: actualShares,
           fee: document.getElementById('fee').value
         };
 
-        if (!data.ticker || !data.price || !data.shares) {
+        if (!data.ticker || !data.price || !actualShares) {
           alert('請填寫代號、單價與股數!');
           return;
         }
