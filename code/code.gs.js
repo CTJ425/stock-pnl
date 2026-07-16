@@ -17,8 +17,9 @@ function buildMenu_() {
   const menu = ui.createMenu('⚡️ 股票小幫手');
   
   menu.addItem('💰 買賣輸入', 'showSidebar');
-  menu.addItem('📊 建立/更新庫存總覽 Dashboard', 'createPortfolioDashboard');
-  menu.addItem('📅 建立/更新年度收益總覽', 'createYearlyReport');
+  menu.addItem('📊 建立庫存總覽 Dashboard', 'createPortfolioDashboard');
+  menu.addItem('📅 建立年度收益總覽', 'createYearlyReport');
+  menu.addItem('🔄 重新掃描並更新所有報表', 'rescanAllReports');
   menu.addSeparator();
   menu.addItem('⚙ 設定全域預設手續費率', 'promptGlobalFeeRate');
   menu.addItem('🛠️ 初始化交易紀錄分頁', 'initializeTransactionSheet');
@@ -597,6 +598,47 @@ function addTransaction(data) {
     return "⚠ 交易已寫入,但自動更新 " + failed.join("、") + " 失敗,請稍後從選單手動重建。";
   }
   return "🎉 成功新增交易紀錄，且已自動更新 Dashboard 與年度收益總覽！";
+}
+
+/* =========================================================
+ * 一鍵重新掃描
+ * - 重新讀取「個股交易紀錄」,同時重建 Dashboard 與年度收益總覽
+ * - 適用於手動刪改交易紀錄後的全面重算
+ * ========================================================= */
+function rescanAllReports() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+
+  // 自動檢查並建立「個股交易紀錄」分頁
+  checkAndInitSheets_();
+
+  const failed = [];
+  let ledger = null;
+  try {
+    ledger = rebuildDashboard_(ss, false);
+  } catch (e) {
+    failed.push("庫存總覽 Dashboard");
+    Logger.log("重新掃描 Dashboard 失敗: " + e);
+  }
+  try {
+    const yearlyLedger = rebuildYearly_(ss, false);
+    if (!ledger) ledger = yearlyLedger;
+  } catch (e) {
+    failed.push("年度收益總覽");
+    Logger.log("重新掃描年度收益總覽失敗: " + e);
+  }
+
+  if (failed.length > 0) {
+    ui.alert("⚠ 重新掃描完成,但 " + failed.join("、") + " 更新失敗。\n請稍候一分鐘後再執行一次即可。");
+    return;
+  }
+
+  let msg = "🎉 已重新掃描交易紀錄,Dashboard 與年度收益總覽皆已更新!";
+  if (ledger && ledger.warnings.length > 0) {
+    msg += "\n\n⚠ 發現 " + ledger.warnings.length + " 筆資料異常(如超賣),已以持有股數為上限計算,詳見執行紀錄。";
+    ledger.warnings.forEach(function (w) { Logger.log("資料異常: " + w); });
+  }
+  ui.alert(msg);
 }
 
 /* =========================================================
