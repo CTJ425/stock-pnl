@@ -103,11 +103,11 @@ function writeYearlyReport_(rptSheet, ledger, years) {
   const totalFees = years.reduce(function (s, yr) { return s + ledger.yearly[yr].fees; }, 0);
   const totalCount = years.reduce(function (s, yr) { return s + ledger.yearly[yr].count; }, 0);
 
-  rptSheet.getRange("A1").setValue("🇹🇼 台股累計已實現 (TWD)").setFontWeight("bold").setFontColor("#64748b");
+  rptSheet.getRange("A1").setValue("🇹🇼 台股歷史已實現 (TWD)").setFontWeight("bold").setFontColor("#64748b");
   rptSheet.getRange("A2").setValue(totalRealizedTw).setFontWeight("bold").setFontSize(14)
     .setNumberFormat('[Red]"NT$"#,##0;[Green]-"NT$"#,##0;"NT$"0');
 
-  rptSheet.getRange("C1").setValue("🇺🇸 美股累計已實現 (USD)").setFontWeight("bold").setFontColor("#64748b");
+  rptSheet.getRange("C1").setValue("🇺🇸 美股歷史累計已實現 (USD)").setFontWeight("bold").setFontColor("#64748b");
   rptSheet.getRange("C2").setValue(totalRealizedUs).setFontWeight("bold").setFontSize(14)
     .setNumberFormat('[Red]"US$"#,##0.00;[Green]-"US$"#,##0.00;"US$"0.00');
 
@@ -119,13 +119,9 @@ function writeYearlyReport_(rptSheet, ledger, years) {
   rptSheet.getRange("G2").setValue(totalCount).setFontWeight("bold").setFontSize(14)
     .setNumberFormat("#,##0");
 
-  // ---- 標題與表頭 ----
-  rptSheet.getRange("A6").setValue("年度收益總覽(已實現損益)")
-    .setFontWeight("bold").setFontSize(16).setFontColor("#1e293b");
-  rptSheet.getRange("A7").setValue("僅計算已賣出部分,採移動平均成本法;未實現損益請參考『庫存總覽 Dashboard』。")
-    .setFontColor("#64748b").setFontSize(10);
+  // ---- 表頭(不設標題與說明列,KPI 摘要卡下方直接接表格) ----
   const header = ["年度", "台股已實現損益 (TWD)", "美股已實現損益 (USD)", "買入總額 (混合幣別)", "賣出總額 (混合幣別)", "手續費合計", "交易筆數"];
-  const headerRow = 9;
+  const headerRow = 6;
   rptSheet.getRange(headerRow, 1, 1, header.length).setValues([header])
     .setBackground("#1e293b").setFontColor("#ffffff").setFontWeight("bold").setHorizontalAlignment("center");
 
@@ -163,23 +159,11 @@ function writeYearlyReport_(rptSheet, ledger, years) {
     }
   });
 
-  // 合計列直接由各年度數字加總(rows 混有明細行,不可再從 rows 加總)
-  const totalRow = ["合計",
-    years.reduce(function (s, yr) { return s + ledger.yearly[yr].realizedTw; }, 0),
-    years.reduce(function (s, yr) { return s + ledger.yearly[yr].realizedUs; }, 0),
-    years.reduce(function (s, yr) { return s + ledger.yearly[yr].buyAmt; }, 0),
-    years.reduce(function (s, yr) { return s + ledger.yearly[yr].sellAmt; }, 0),
-    totalFees,
-    totalCount
-  ];
+  // 合計以各年度總計行為單位呈現;全量歷史累計已由頂部 KPI 摘要卡涵蓋,不另設跨年度合計列
   rptSheet.getRange(dataStart, 1, rows.length, header.length).setValues(rows);
-  const totalRowIdx = dataStart + rows.length;
-  rptSheet.getRange(totalRowIdx, 1, 1, header.length).setValues([totalRow])
-    .setFontWeight("bold").setBackground("#f1f5f9");
 
   // ---- 數字格式與對齊 ----
-  const numRows = rows.length + 1;
-  // 含合計列
+  const numRows = rows.length;
   rptSheet.getRange(dataStart, 1, numRows, 1).setHorizontalAlignment("center");
   rptSheet.getRange(dataStart, 2, numRows, 2).setNumberFormat('[Red]$#,##0.00;[Green]-$#,##0.00;$0.00').setHorizontalAlignment("right");
   rptSheet.getRange(dataStart, 4, numRows, 3).setNumberFormat("$#,##0.00").setHorizontalAlignment("right");
@@ -216,7 +200,7 @@ function writeYearlyReport_(rptSheet, ledger, years) {
   // 自動擴展欄寬並套用最小寬度限制
   autoResizeColumnsWithMin_(rptSheet, 1, 7, [90, 170, 170, 150, 150, 130, 90]);
 
-  rptSheet.getRange(totalRowIdx + 2, 1).setValue(
+  rptSheet.getRange(dataStart + rows.length + 1, 1).setValue(
     "產生時間:" + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy/MM/dd HH:mm")
   ).setFontColor("#94a3b8").setFontSize(9);
 }
