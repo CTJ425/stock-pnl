@@ -753,10 +753,16 @@ function writeDashboard_(dbSheet, holdings) {
       // 現價抓不到時留空(而非當 0),避免未實現損益顯示成全額虧損
       fPrice.push(['=IFERROR(GOOGLEFINANCE($A' + r + ',"price"),"")']);
       fMktVal.push(['=IF(ISNUMBER($C' + r + '),C' + r + '*D' + r + ',"")']);
-      // 扣除預估賣出手續費與證交稅以對齊券商 APP 淨損益,僅台股適用
-      // (一般股票 0.3%,ETF 代號 00 開頭 0.1%;美股多為零手續費,不預扣)
-      const sellCostRate = 'IF(LEFT($A' + r + ',4)="TPE:",' + feeRate + '+IF(MID($A' + r + ',5,2)="00",0.001,0.003),0)';
-      fUnreal.push(['=IF(ISNUMBER($C' + r + '),F' + r + '-D' + r + '*E' + r + '-F' + r + '*' + sellCostRate + ',"")']);
+      // 台股:手續費與證交稅分項 FLOOR 捨去到元(與券商 App / Sidebar calculateFee 同構),
+      // 外層 ROUND 收整移動平均成本的浮點尾數;美股:多為零手續費,不預扣
+      const isTw = holdings[i].info.currency === "TWD";
+      if (isTw) {
+        const taxRate = 'IF(MID($A' + r + ',5,2)="00",0.001,0.003)'; // ETF(00 開頭) 0.1%,一般股票 0.3%
+        fUnreal.push(['=IF(ISNUMBER($C' + r + '),ROUND(F' + r + '-D' + r + '*E' + r +
+          '-FLOOR(F' + r + '*' + feeRate + ')-FLOOR(F' + r + '*' + taxRate + '),0),"")']);
+      } else {
+        fUnreal.push(['=IF(ISNUMBER($C' + r + '),F' + r + '-D' + r + '*E' + r + ',"")']);
+      }
       // SUM 會自動略過留空的未實現損益,現價抓不到時仍顯示已實現部分
       fTotal.push(['=SUM(G' + r + ',H' + r + ')']);
       fRoi.push(['=IF($L' + r + '=0,0,I' + r + '/$L' + r + ')']);
@@ -769,15 +775,31 @@ function writeDashboard_(dbSheet, holdings) {
     // I 累計總損益
     dbSheet.getRange(DATA_START, 10, holdings.length, 1).setFormulas(fRoi);
     // J 報酬率
+
+    // 依幣別分區塊設定金額格式(holdings 已按 TWD 在前、USD 在後排序,各為連續區塊)
+    // 台股:現價/均價保留兩位小數(股價本身有小數),市值與損益取整數;美股:全部兩位小數
+    const twCount = holdings.filter(function (h) { return h.info.currency === "TWD"; }).length;
+    const usCount = holdings.length - twCount;
+    if (twCount > 0) {
+      dbSheet.getRange(DATA_START, 3, twCount, 1).setNumberFormat('"NT$"#,##0.00'); // C 現價
+      dbSheet.getRange(DATA_START, 5, twCount, 1).setNumberFormat('"NT$"#,##0.00'); // E 均價
+      dbSheet.getRange(DATA_START, 6, twCount, 1).setNumberFormat('"NT$"#,##0');    // F 市值
+      dbSheet.getRange(DATA_START, 7, twCount, 3)                                   // G:I 損益
+        .setNumberFormat('[Red]"NT$"#,##0;[Green]-"NT$"#,##0;"NT$"0');
+    }
+    if (usCount > 0) {
+      const usStart = DATA_START + twCount;
+      dbSheet.getRange(usStart, 3, usCount, 1).setNumberFormat('"US$"#,##0.00');    // C 現價
+      dbSheet.getRange(usStart, 5, usCount, 2).setNumberFormat('"US$"#,##0.00');    // E:F 均價/市值
+      dbSheet.getRange(usStart, 7, usCount, 3)                                      // G:I 損益
+        .setNumberFormat('[Red]"US$"#,##0.00;[Green]-"US$"#,##0.00;"US$"0.00');
+    }
   }
 
   // ---- 數字格式 ----
   const endRow = Math.max(DATA_START + holdings.length - 1, 120);
   dbSheet.getRange("C7:J" + endRow).setHorizontalAlignment("right");
-  dbSheet.getRange("C7:C" + endRow).setNumberFormat("$#,##0.00");
   dbSheet.getRange("D7:D" + endRow).setNumberFormat("#,##0");
-  dbSheet.getRange("E7:F" + endRow).setNumberFormat("$#,##0.00");
-  dbSheet.getRange("G7:I" + endRow).setNumberFormat('[Red]$#,##0.00;[Green]-$#,##0.00;$0.00');
   dbSheet.getRange("J7:J" + endRow).setNumberFormat('[Red]0.00%;[Green]-0.00%;0.00%');
   dbSheet.getRange("K7:K" + endRow).setHorizontalAlignment("center").setFontColor("#64748b");
 
