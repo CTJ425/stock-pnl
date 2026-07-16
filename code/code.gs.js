@@ -605,7 +605,8 @@ function addTransaction(data) {
  * 試算表內只留每列一條輕量 GOOGLEFINANCE 抓現價 + 簡單算式,
  * 徹底移除原本 LET+REDUCE+LAMBDA 巨型公式造成的服務不穩定
  * - 已實現損益採移動平均成本法(與年度收益總覽一致)
- * - 摘要卡:台股 (TWD) / 美股 (USD) 分開統計
+ * - 摘要卡:台股 (TWD) / 美股 (USD) 分開統計,僅保留持倉市值
+ * 與未實現損益;已實現/總損益大字報移至「年度收益總覽」
  * - L 欄為隱藏的「累計買入成本」,僅供報酬率計算
  * ========================================================= */
 function createPortfolioDashboard() {
@@ -644,7 +645,7 @@ function rebuildDashboard_(ss, focus) {
 
   // 步驟 1:先在記憶體完成所有計算(此階段不寫入任何分頁,失敗不留半成品)
   const ledger = computeLedger_(recordSheet);
-  // 資料列只顯示 active 持股;已清倉個股的已實現損益仍計入摘要卡靜態值與年度收益總覽
+  // 資料列只顯示 active 持股;已清倉個股的已實現損益改於「年度收益總覽」(大字報與年度明細)呈現
   const holdings = ledger.tickerOrder
     .map(function (t) { return { ticker: t, info: ledger.tickers[t] }; })
     .filter(function (x) { return x.info.qty > 0; })
@@ -655,29 +656,20 @@ function rebuildDashboard_(ss, focus) {
   // 步驟 2:重設分頁並寫入(自動重試)
   withRetry_(function () {
     const dbSheet = resetSheet_(ss, "庫存總覽 Dashboard");
-    writeDashboard_(dbSheet, holdings, ledger);
+    writeDashboard_(dbSheet, holdings);
     if (focus) ss.setActiveSheet(dbSheet);
   }, "建立庫存總覽 Dashboard");
   return ledger;
 }
 
-function writeDashboard_(dbSheet, holdings, ledger) {
+function writeDashboard_(dbSheet, holdings) {
   const DATA_START = 7;
   // 第 6 列表頭,第 7 列起為資料
   // (欄寬統一由結尾的 autoResizeColumnsWithMin_ 設定)
 
-  // 已實現損益摘要卡需含「已清倉個股」的全量數字,但資料列只剩 active 持股,
-  // 故 E2/E4 改寫入靜態值,不再以 SUMIFS 加總資料列
-  let totalRealizedTw = 0;
-  let totalRealizedUs = 0;
-  Object.keys(ledger.tickers).forEach(function (t) {
-    const info = ledger.tickers[t];
-    if (info.currency === "TWD") totalRealizedTw += info.realized;
-    else totalRealizedUs += info.realized;
-  });
-
-  // ---- 摘要卡 ----
-  dbSheet.getRange("A1:K4").setBackground("#f8fafc");
+  // ---- 摘要卡:僅保留持倉市值與未實現損益 ----
+  // (已實現損益/總損益等全量大字報改於「年度收益總覽」頂部呈現)
+  dbSheet.getRange("A1:D4").setBackground("#f8fafc");
   // 台股 (TWD) — 第 1~2 列
   dbSheet.getRange("A1").setValue("🇹🇼 台股持倉市值 (TWD)").setFontWeight("bold").setFontColor("#64748b");
   dbSheet.getRange("A2").setFormula('=SUMIFS(F7:F, K7:K, "TWD")')
@@ -687,14 +679,6 @@ function writeDashboard_(dbSheet, holdings, ledger) {
   dbSheet.getRange("C2").setFormula('=SUMIFS(G7:G, K7:K, "TWD")')
     .setFontWeight("bold").setFontSize(14).setNumberFormat('[Red]"NT$"#,##0;[Green]-"NT$"#,##0;"NT$"0');
 
-  dbSheet.getRange("E1").setValue("台股已實現損益").setFontWeight("bold").setFontColor("#64748b");
-  dbSheet.getRange("E2").setValue(totalRealizedTw)
-    .setFontWeight("bold").setFontSize(14).setNumberFormat('[Red]"NT$"#,##0;[Green]-"NT$"#,##0;"NT$"0');
-
-  dbSheet.getRange("G1").setValue("台股總損益 (TWD)").setFontWeight("bold").setFontColor("#1e293b");
-  dbSheet.getRange("G2").setFormula("=C2+E2")
-    .setFontWeight("bold").setFontSize(16).setNumberFormat('[Red]"NT$"#,##0;[Green]-"NT$"#,##0;"NT$"0');
-
   // 美股 (USD) — 第 3~4 列
   dbSheet.getRange("A3").setValue("🇺🇸 美股持倉市值 (USD)").setFontWeight("bold").setFontColor("#64748b");
   dbSheet.getRange("A4").setFormula('=SUMIFS(F7:F, K7:K, "USD")')
@@ -703,14 +687,6 @@ function writeDashboard_(dbSheet, holdings, ledger) {
   dbSheet.getRange("C3").setValue("美股未實現損益").setFontWeight("bold").setFontColor("#64748b");
   dbSheet.getRange("C4").setFormula('=SUMIFS(G7:G, K7:K, "USD")')
     .setFontWeight("bold").setFontSize(14).setNumberFormat('[Red]"US$"#,##0.00;[Green]-"US$"#,##0.00;"US$"0.00');
-
-  dbSheet.getRange("E3").setValue("美股已實現損益").setFontWeight("bold").setFontColor("#64748b");
-  dbSheet.getRange("E4").setValue(totalRealizedUs)
-    .setFontWeight("bold").setFontSize(14).setNumberFormat('[Red]"US$"#,##0.00;[Green]-"US$"#,##0.00;"US$"0.00');
-
-  dbSheet.getRange("G3").setValue("美股總損益 (USD)").setFontWeight("bold").setFontColor("#1e293b");
-  dbSheet.getRange("G4").setFormula("=C4+E4")
-    .setFontWeight("bold").setFontSize(16).setNumberFormat('[Red]"US$"#,##0.00;[Green]-"US$"#,##0.00;"US$"0.00');
   // ---- 表頭 ----
   const header = ["股票代號", "股票名稱", "目前現價", "持有股數", "平均買入成本", "目前市值", "未實現損益", "已實現損益", "累計總損益", "總報酬率", "幣別", "累計買入成本"];
   dbSheet.getRange(6, 1, 1, header.length).setValues([header])

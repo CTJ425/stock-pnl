@@ -197,10 +197,19 @@ function writeYearlyReport_(rptSheet, ledger, years) {
   });
 
   // ---- 建立折疊列群組(折疊鈕顯示在年度行) ----
+  // 分組僅屬視覺輔助:任一群組 API 失敗只記錄不中斷,明細行仍完整呈現
   if (groupRanges.length > 0) {
-    rptSheet.setRowGroupControlPosition(SpreadsheetApp.GroupControlTogglePosition.BEFORE);
+    try {
+      rptSheet.setRowGroupControlPosition(SpreadsheetApp.GroupControlTogglePosition.BEFORE);
+    } catch (e) {
+      Logger.log("設定列群組折疊鈕位置失敗(忽略,折疊鈕將顯示於群組下方): " + e);
+    }
     groupRanges.forEach(function (g) {
-      rptSheet.getRange(g.start, 1, g.count, 1).shiftRowGroupDepth(1);
+      try {
+        rptSheet.getRange(g.start, 1, g.count, 1).shiftRowGroupDepth(1);
+      } catch (e) {
+        Logger.log("建立列群組失敗(忽略,明細仍會顯示): " + e);
+      }
     });
   }
 
