@@ -278,7 +278,7 @@ function computeLedger_(recordSheet) {
   txs.forEach(function (tx) {
     const year = tx.date.getFullYear();
     if (!result.yearly[year]) {
-      result.yearly[year] = { realizedTw: 0, realizedUs: 0, buyAmt: 0, sellAmt: 0, fees: 0, count: 0 };
+      result.yearly[year] = { realizedTw: 0, realizedUs: 0, buyAmt: 0, sellAmt: 0, fees: 0, count: 0, tickers: {} };
     }
     const y = result.yearly[year];
     const isTw = tx.ticker.indexOf("TPE:") === 0;
@@ -297,18 +297,29 @@ function computeLedger_(recordSheet) {
     const pos = result.tickers[tx.ticker];
     if (tx.name) pos.name = tx.name;
 
+    // 個股年度明細統計(供年度收益總覽的展開明細使用)
+    if (!y.tickers[tx.ticker]) {
+      y.tickers[tx.ticker] = { ticker: tx.ticker, name: tx.name || tx.ticker, buyAmt: 0, sellAmt: 0, realized: 0, fees: 0, count: 0, currency: isTw ? "TWD" : "USD" };
+    }
+    const yt = y.tickers[tx.ticker];
+    if (tx.name) yt.name = tx.name;
+
     y.count++;
     y.fees += tx.fee;
+    yt.count++;
+    yt.fees += tx.fee;
 
     if (tx.type === "買入") {
       const totalCost = tx.price * tx.shares + tx.fee; // 手續費計入成本
       y.buyAmt += totalCost;
+      yt.buyAmt += totalCost;
       pos.cost += totalCost;
       pos.qty += tx.shares;
       pos.buyCostTotal += totalCost;
     } else {
       const revenue = tx.price * tx.shares - tx.fee;
       y.sellAmt += revenue;
+      yt.sellAmt += revenue;
 
       const avgCost = pos.qty > 0 ? pos.cost / pos.qty : 0;
       const matchedQty = Math.min(tx.shares, pos.qty);
@@ -323,6 +334,7 @@ function computeLedger_(recordSheet) {
       pos.cost -= costBasis;
       pos.qty -= matchedQty;
       pos.realized += realized;
+      yt.realized += realized;
 
       if (isTw) y.realizedTw += realized;
       else y.realizedUs += realized;
@@ -632,9 +644,10 @@ function rebuildDashboard_(ss, focus) {
 
   // 步驟 1:先在記憶體完成所有計算(此階段不寫入任何分頁,失敗不留半成品)
   const ledger = computeLedger_(recordSheet);
+  // 資料列只顯示 active 持股;已清倉個股的已實現損益仍計入摘要卡靜態值與年度收益總覽
   const holdings = ledger.tickerOrder
     .map(function (t) { return { ticker: t, info: ledger.tickers[t] }; })
-    .filter(function (x) { return x.info.buyCostTotal > 0; })
+    .filter(function (x) { return x.info.qty > 0; })
     .sort(function (a, b) {
       if (a.info.currency !== b.info.currency) return a.info.currency === "TWD" ? -1 : 1;
       return a.ticker < b.ticker ? -1 : (a.ticker > b.ticker ? 1 : 0);
@@ -642,16 +655,26 @@ function rebuildDashboard_(ss, focus) {
   // 步驟 2:重設分頁並寫入(自動重試)
   withRetry_(function () {
     const dbSheet = resetSheet_(ss, "庫存總覽 Dashboard");
-    writeDashboard_(dbSheet, holdings);
+    writeDashboard_(dbSheet, holdings, ledger);
     if (focus) ss.setActiveSheet(dbSheet);
   }, "建立庫存總覽 Dashboard");
   return ledger;
 }
 
-function writeDashboard_(dbSheet, holdings) {
+function writeDashboard_(dbSheet, holdings, ledger) {
   const DATA_START = 7;
   // 第 6 列表頭,第 7 列起為資料
   // (欄寬統一由結尾的 autoResizeColumnsWithMin_ 設定)
+
+  // 已實現損益摘要卡需含「已清倉個股」的全量數字,但資料列只剩 active 持股,
+  // 故 E2/E4 改寫入靜態值,不再以 SUMIFS 加總資料列
+  let totalRealizedTw = 0;
+  let totalRealizedUs = 0;
+  Object.keys(ledger.tickers).forEach(function (t) {
+    const info = ledger.tickers[t];
+    if (info.currency === "TWD") totalRealizedTw += info.realized;
+    else totalRealizedUs += info.realized;
+  });
 
   // ---- 摘要卡 ----
   dbSheet.getRange("A1:K4").setBackground("#f8fafc");
@@ -665,7 +688,7 @@ function writeDashboard_(dbSheet, holdings) {
     .setFontWeight("bold").setFontSize(14).setNumberFormat('[Red]"NT$"#,##0;[Green]-"NT$"#,##0;"NT$"0');
 
   dbSheet.getRange("E1").setValue("台股已實現損益").setFontWeight("bold").setFontColor("#64748b");
-  dbSheet.getRange("E2").setFormula('=SUMIFS(H7:H, K7:K, "TWD")')
+  dbSheet.getRange("E2").setValue(totalRealizedTw)
     .setFontWeight("bold").setFontSize(14).setNumberFormat('[Red]"NT$"#,##0;[Green]-"NT$"#,##0;"NT$"0');
 
   dbSheet.getRange("G1").setValue("台股總損益 (TWD)").setFontWeight("bold").setFontColor("#1e293b");
@@ -682,7 +705,7 @@ function writeDashboard_(dbSheet, holdings) {
     .setFontWeight("bold").setFontSize(14).setNumberFormat('[Red]"US$"#,##0.00;[Green]-"US$"#,##0.00;"US$"0.00');
 
   dbSheet.getRange("E3").setValue("美股已實現損益").setFontWeight("bold").setFontColor("#64748b");
-  dbSheet.getRange("E4").setFormula('=SUMIFS(H7:H, K7:K, "USD")')
+  dbSheet.getRange("E4").setValue(totalRealizedUs)
     .setFontWeight("bold").setFontSize(14).setNumberFormat('[Red]"US$"#,##0.00;[Green]-"US$"#,##0.00;"US$"0.00');
 
   dbSheet.getRange("G3").setValue("美股總損益 (USD)").setFontWeight("bold").setFontColor("#1e293b");
