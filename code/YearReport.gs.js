@@ -87,7 +87,8 @@ function removeAllRowGroups_(sheet) {
 }
 
 function writeYearlyReport_(rptSheet, ledger, years) {
-  const colWidths = [90, 170, 170, 150, 150, 130, 90];
+  // A 欄需容納縮排的個股標籤(如「   TPE:2330 (台積電)」),故較寬
+  const colWidths = [180, 130, 120, 120, 100, 80, 130, 120, 120, 100, 80];
   colWidths.forEach(function (w, i) { rptSheet.setColumnWidth(i + 1, w); });
 
   // ---- 頂部大字報:全量 KPI 摘要卡 (A1:G4) ----
@@ -119,22 +120,53 @@ function writeYearlyReport_(rptSheet, ledger, years) {
   rptSheet.getRange("G2").setValue(totalCount).setFontWeight("bold").setFontSize(14)
     .setNumberFormat("#,##0");
 
-  // ---- 表頭(不設標題與說明列,KPI 摘要卡下方直接接表格) ----
-  const header = ["年度", "台股已實現損益 (TWD)", "美股已實現損益 (USD)", "買入總額 (混合幣別)", "賣出總額 (混合幣別)", "手續費合計", "交易筆數"];
-  const headerRow = 6;
-  rptSheet.getRange(headerRow, 1, 1, header.length).setValues([header])
-    .setBackground("#1e293b").setFontColor("#ffffff").setFontWeight("bold").setHorizontalAlignment("center");
+  // ---- 表頭(兩層分區:台股/美股各自獨立欄位,不混合幣別) ----
+  const NUM_COLS = 11; // A 年度 + B~F 台股五欄 + G~K 美股五欄
+  const headerRow = 6;    // 分區標題列(合併儲存格)
+  const subHeaderRow = 7; // 欄位名稱列
+  const dataStart = 8;
+
+  // sheet.clear() 不會解除合併儲存格,先還原表頭區再重新合併,避免重複執行時 merge 衝突
+  try { rptSheet.getRange(headerRow, 1, 2, NUM_COLS).breakApart(); } catch (e) { Logger.log("解除表頭合併失敗(忽略): " + e); }
+
+  rptSheet.getRange(headerRow, 1, 2, NUM_COLS)
+    .setBackground("#1e293b").setFontColor("#ffffff").setFontWeight("bold")
+    .setHorizontalAlignment("center").setVerticalAlignment("middle");
+  rptSheet.getRange(headerRow, 1, 2, 1).merge().setValue("年度");
+  rptSheet.getRange(headerRow, 2, 1, 5).merge().setValue("🇹🇼 台股 (TWD)");
+  rptSheet.getRange(headerRow, 7, 1, 5).merge().setValue("🇺🇸 美股 (USD)");
+  const subHeader = ["已實現損益", "買入總額", "賣出總額", "手續費", "交易筆數"];
+  rptSheet.getRange(subHeaderRow, 2, 1, 5).setValues([subHeader]);
+  rptSheet.getRange(subHeaderRow, 7, 1, 5).setValues([subHeader]);
 
   // ---- 資料列:年度總計行 + 該年度有賣出的個股明細行 ----
-  const dataStart = headerRow + 1;
   const rows = [];
   const groupRanges = []; // 各年度明細的實際列範圍,供列群組與明細樣式使用
   const yearRowIdxs = [];
   years.forEach(function (yr) {
     const y = ledger.yearly[yr];
+
+    // 由個股明細統計推導該年度的台股/美股分區總計(無該市場交易的年度留空)
+    const tw = { realized: 0, buyAmt: 0, sellAmt: 0, fees: 0, count: 0 };
+    const us = { realized: 0, buyAmt: 0, sellAmt: 0, fees: 0, count: 0 };
+    Object.keys(y.tickers).forEach(function (t) {
+      const yt = y.tickers[t];
+      const agg = yt.currency === "TWD" ? tw : us;
+      agg.realized += yt.realized;
+      agg.buyAmt += yt.buyAmt;
+      agg.sellAmt += yt.sellAmt;
+      agg.fees += yt.fees;
+      agg.count += yt.count;
+    });
+
     const parentRowIdx = dataStart + rows.length; // 年度行的實際列號
     yearRowIdxs.push(parentRowIdx);
-    rows.push([yr, y.realizedTw, y.realizedUs, y.buyAmt, y.sellAmt, y.fees, y.count]);
+    rows.push([yr,
+      tw.count > 0 ? tw.realized : "", tw.count > 0 ? tw.buyAmt : "", tw.count > 0 ? tw.sellAmt : "",
+      tw.count > 0 ? tw.fees : "", tw.count > 0 ? tw.count : "",
+      us.count > 0 ? us.realized : "", us.count > 0 ? us.buyAmt : "", us.count > 0 ? us.sellAmt : "",
+      us.count > 0 ? us.fees : "", us.count > 0 ? us.count : ""
+    ]);
 
     // 只列出該年度有賣出的個股(含損益剛好打平為 0 者);有買無賣者不列。
     // realized 只在賣出時變動,加上此檢查可涵蓋售價 0 的沖銷(revenue 為 0)極端情況
@@ -145,14 +177,13 @@ function writeYearlyReport_(rptSheet, ledger, years) {
       detailTickers.forEach(function (t) {
         const yt = y.tickers[t];
         const isTw = yt.currency === "TWD";
-        rows.push([
-          "   " + yt.ticker + " (" + yt.name + ")",
-          isTw ? yt.realized : "", // 非該幣別留空,避免顯示 $0.00
-          isTw ? "" : yt.realized,
-          yt.buyAmt,
-          yt.sellAmt,
-          yt.fees,
-          yt.count
+        const label = "   " + yt.ticker + " (" + yt.name + ")";
+        // 個股數字只填入自身市場的分區,另一分區整組留空
+        rows.push([label,
+          isTw ? yt.realized : "", isTw ? yt.buyAmt : "", isTw ? yt.sellAmt : "",
+          isTw ? yt.fees : "", isTw ? yt.count : "",
+          isTw ? "" : yt.realized, isTw ? "" : yt.buyAmt, isTw ? "" : yt.sellAmt,
+          isTw ? "" : yt.fees, isTw ? "" : yt.count
         ]);
       });
       groupRanges.push({ start: parentRowIdx + 1, count: detailTickers.length });
@@ -160,22 +191,27 @@ function writeYearlyReport_(rptSheet, ledger, years) {
   });
 
   // 合計以各年度總計行為單位呈現;全量歷史累計已由頂部 KPI 摘要卡涵蓋,不另設跨年度合計列
-  rptSheet.getRange(dataStart, 1, rows.length, header.length).setValues(rows);
+  rptSheet.getRange(dataStart, 1, rows.length, NUM_COLS).setValues(rows);
 
   // ---- 數字格式與對齊 ----
   const numRows = rows.length;
   rptSheet.getRange(dataStart, 1, numRows, 1).setHorizontalAlignment("center");
-  rptSheet.getRange(dataStart, 2, numRows, 2).setNumberFormat('[Red]$#,##0.00;[Green]-$#,##0.00;$0.00').setHorizontalAlignment("right");
-  rptSheet.getRange(dataStart, 4, numRows, 3).setNumberFormat("$#,##0.00").setHorizontalAlignment("right");
-  rptSheet.getRange(dataStart, 7, numRows, 1).setNumberFormat("#,##0").setHorizontalAlignment("center");
-  // 紅漲綠跌以數字格式的 [Red]/[Green] 呈現,不使用條件式格式(本文件該服務層異常)
+  // B/G 已實現損益:紅漲綠跌(以數字格式呈現,不使用條件式格式,本文件該服務層異常)
+  rptSheet.getRange(dataStart, 2, numRows, 1).setNumberFormat('[Red]$#,##0.00;[Green]-$#,##0.00;$0.00').setHorizontalAlignment("right");
+  rptSheet.getRange(dataStart, 7, numRows, 1).setNumberFormat('[Red]$#,##0.00;[Green]-$#,##0.00;$0.00').setHorizontalAlignment("right");
+  // C~E / H~J 買入、賣出、手續費
+  rptSheet.getRange(dataStart, 3, numRows, 3).setNumberFormat("$#,##0.00").setHorizontalAlignment("right");
+  rptSheet.getRange(dataStart, 8, numRows, 3).setNumberFormat("$#,##0.00").setHorizontalAlignment("right");
+  // F/K 交易筆數
+  rptSheet.getRange(dataStart, 6, numRows, 1).setNumberFormat("#,##0").setHorizontalAlignment("center");
+  rptSheet.getRange(dataStart, 11, numRows, 1).setNumberFormat("#,##0").setHorizontalAlignment("center");
 
   // 年度行加粗、明細行縮小灰階;明細 A 欄改靠左(置中會使縮排空白失效)
   yearRowIdxs.forEach(function (r) {
-    rptSheet.getRange(r, 1, 1, header.length).setFontWeight("bold").setFontSize(11);
+    rptSheet.getRange(r, 1, 1, NUM_COLS).setFontWeight("bold").setFontSize(11);
   });
   groupRanges.forEach(function (g) {
-    rptSheet.getRange(g.start, 1, g.count, header.length)
+    rptSheet.getRange(g.start, 1, g.count, NUM_COLS)
       .setFontSize(10).setFontColor("#64748b").setBackground("#f8fafc");
     rptSheet.getRange(g.start, 1, g.count, 1).setHorizontalAlignment("left");
   });
@@ -198,7 +234,7 @@ function writeYearlyReport_(rptSheet, ledger, years) {
   }
 
   // 自動擴展欄寬並套用最小寬度限制
-  autoResizeColumnsWithMin_(rptSheet, 1, 7, [90, 170, 170, 150, 150, 130, 90]);
+  autoResizeColumnsWithMin_(rptSheet, 1, 11, [180, 130, 120, 120, 100, 80, 130, 120, 120, 100, 80]);
 
   rptSheet.getRange(dataStart + rows.length + 1, 1).setValue(
     "產生時間:" + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy/MM/dd HH:mm")
